@@ -13,7 +13,7 @@ static float clampf(float x, float lo, float hi)
 	return x;
 }
 
-void icc_init(Icc *icc, int pm_sw_interval)
+void icc_init(Icc *icc, uint8_t *pm_sw_interval)
 {
 	if (icc == 0)
 	{
@@ -31,7 +31,7 @@ void icc_init(Icc *icc, int pm_sw_interval)
 	icc->transition_count = 0U;
 	icc->relay = 0.0f;
 
-	switch (pm_sw_interval)
+	switch (*pm_sw_interval)
 	{
 	case 20:
 		icc->resting_slope = Q1_SLOP_20SECS;

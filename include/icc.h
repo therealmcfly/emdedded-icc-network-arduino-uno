@@ -48,7 +48,7 @@ extern "C"
 		float resting_slope;
 	} Icc;
 
-	void icc_init(Icc *icc, int pm_sw_interval);
+	void icc_init(Icc *icc, uint8_t *pm_sw_interval);
 	float icc_update(Icc *icc, uint32_t dt_ms);
 	uint8_t icc_state_index(const Icc *icc);
 
