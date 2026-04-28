@@ -27,10 +27,11 @@ extern "C"
 		IccPathState state;
 		uint32_t wait_ms_accum;
 		bool initialized;
+		uint16_t delay_ms;
 		Icc *cells[2];
 	} IccPath;
 
-	void icc_path_init(IccPath *path, float *t1, float *t2);
+	void icc_path_init(IccPath *path, float *t1, float *t2, uint16_t *delay_ms);
 	void icc_path_update(IccPath *path, float *t1, float *t2, uint32_t dt_ms);
 	uint8_t icc_path_state_index(const IccPath *path);
 
