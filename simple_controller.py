@@ -60,7 +60,15 @@ class SerialReader(threading.Thread):
         try:
             self.serial_port = serial.Serial(self.port, BAUD, timeout=0.05)
             self.serial_port.reset_input_buffer()
-            self.serial_port.write(self._config_packet())
+            # Give the Arduino a moment to reset and run setup after opening the port
+            time.sleep(2.0)
+            packet = self._config_packet()
+            # small debug: record packet size so we can tell if it was sent
+            try:
+                self.on_status(f"Sending init packet ({len(packet)} bytes)")
+            except Exception:
+                pass
+            self.serial_port.write(packet)
             self.serial_port.flush()
             self.on_status(f"Connected to {self.port}")
         except Exception as exc:
