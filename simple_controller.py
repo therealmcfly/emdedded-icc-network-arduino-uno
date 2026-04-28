@@ -17,6 +17,7 @@ BAUD = 115200
 MAX_ROWS = 10
 MAX_COLS = 10
 MAX_TOTAL_CELLS = 25
+UINT16_MAX = 65535
 SUPPORTED_FREQS = (20, 23, 30, 40)
 
 
@@ -34,7 +35,7 @@ class Settings:
 
 
 class SerialReader(threading.Thread):
-    def __init__(self, port: str, settings: Settings, on_frame, on_status, on_error):
+    def __init__(self, port: str, settings: Settings, on_frame, on_status, on_error, icc_vars=None, path_vars=None):
         super().__init__(daemon=True)
         self.port = port
         self.settings = settings
@@ -43,6 +44,9 @@ class SerialReader(threading.Thread):
         self.on_error = on_error
         self.stop_flag = threading.Event()
         self.serial_port: serial.Serial | None = None
+        # references to UI variable matrices (populated by App)
+        self.icc_vars = icc_vars
+        self.path_vars = path_vars
 
     def stop(self):
         self.stop_flag.set()
@@ -113,17 +117,32 @@ class SerialReader(threading.Thread):
         packet = bytearray()
         packet.extend(HEADER)
         packet.extend(struct.pack(
-            "<BBBHBH",
-            1,
+            "<BBH",
             rows,
             cols,
             int(self.settings.time_step_ms),
-            int(self.settings.icc_freq),
-            int(self.settings.path_delay_ms),
         ))
-        packet.extend(bytes([int(self.settings.icc_freq)] * (rows * cols)))
-        packet.extend(struct.pack("<H", int(self.settings.path_delay_ms)) * (rows * max(cols - 1, 0)))
-        packet.extend(struct.pack("<H", int(self.settings.path_delay_ms)) * (max(rows - 1, 0) * cols))
+
+        for r in range(rows):
+            for c in range(cols):
+                freq = clamp_int(self.icc_vars[r][c].get(), min(SUPPORTED_FREQS), max(SUPPORTED_FREQS))
+                packet.extend(struct.pack("<B", freq))
+
+        h_cols = max(cols - 1, 0)
+        if h_cols > 0:
+            for r in range(rows):
+                for c in range(h_cols):
+                    delay_ms = clamp_int(self.path_vars[r][c].get(), 0, UINT16_MAX)
+                    packet.extend(struct.pack("<H", delay_ms))
+
+        v_rows = max(rows - 1, 0)
+        if v_rows > 0:
+            offset = rows if h_cols > 0 else 0
+            for r in range(v_rows):
+                for c in range(cols):
+                    delay_ms = clamp_int(self.path_vars[offset + r][c].get(), 0, UINT16_MAX)
+                    packet.extend(struct.pack("<H", delay_ms))
+
         return bytes(packet)
 
 
@@ -142,6 +161,7 @@ class App(tk.Tk):
         self.status_var = tk.StringVar(value="Disconnected")
         self.rows_var = tk.IntVar(value=self.settings.rows)
         self.cols_var = tk.IntVar(value=self.settings.cols)
+        self.time_step_var = tk.IntVar(value=self.settings.time_step_ms)
         self.icc_freq_all_var = tk.IntVar(value=self.settings.icc_freq)
         self.path_delay_all_var = tk.IntVar(value=self.settings.path_delay_ms)
         self.v_min_var = tk.DoubleVar(value=self.settings.v_min)
@@ -222,7 +242,9 @@ class App(tk.Tk):
         ttk.Spinbox(top, from_=1, to=MAX_ROWS, width=5, textvariable=self.rows_var).grid(row=0, column=1, padx=(6, 14), sticky="w")
         ttk.Label(top, text="Cols").grid(row=0, column=2, sticky="w")
         ttk.Spinbox(top, from_=1, to=MAX_COLS, width=5, textvariable=self.cols_var).grid(row=0, column=3, padx=(6, 14), sticky="w")
-        ttk.Button(top, text="Apply", command=self._rebuild_grids).grid(row=0, column=4, sticky="w")
+        ttk.Label(top, text="Time step (ms)").grid(row=0, column=4, sticky="w")
+        ttk.Spinbox(top, from_=1, to=60000, width=7, textvariable=self.time_step_var).grid(row=0, column=5, padx=(6, 14), sticky="w")
+        ttk.Button(top, text="Apply", command=self._rebuild_grids).grid(row=0, column=6, sticky="w")
 
         ttk.Label(top, text="All ICC Freq").grid(row=1, column=0, sticky="w", pady=(10, 0))
         ttk.Combobox(top, state="readonly", values=[str(f) for f in SUPPORTED_FREQS], width=4, textvariable=self.icc_freq_all_var).grid(row=1, column=1, padx=(6, 14), pady=(10, 0), sticky="w")
@@ -235,7 +257,7 @@ class App(tk.Tk):
         top = ttk.Frame(self.path_tab)
         top.pack(fill="x", padx=8, pady=8)
         ttk.Label(top, text="All Path Delay (ms)").grid(row=0, column=0, sticky="w")
-        ttk.Spinbox(top, from_=0, to=65535, width=4, textvariable=self.path_delay_all_var).grid(row=0, column=1, padx=(6, 12), sticky="w")
+        ttk.Spinbox(top, from_=0, to=UINT16_MAX, width=4, textvariable=self.path_delay_all_var).grid(row=0, column=1, padx=(6, 12), sticky="w")
         ttk.Button(top, text="Apply All", command=self._apply_all_path_delays).grid(row=0, column=2, sticky="w")
         self.path_frame = ttk.Frame(self.path_tab)
         self.path_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
@@ -307,6 +329,8 @@ class App(tk.Tk):
             on_frame=self._on_frame,
             on_status=self._set_status,
             on_error=self._on_error,
+            icc_vars=self.icc_vars,
+            path_vars=self.path_vars,
         )
         self.reader.start()
         self.connected = True
@@ -335,7 +359,7 @@ class App(tk.Tk):
         return Settings(
             rows=rows,
             cols=cols,
-            time_step_ms=clamp_int(self.settings.time_step_ms, 1, 60000),
+            time_step_ms=clamp_int(self.time_step_var.get(), 1, 60000),
             icc_freq=clamp_int(self.icc_freq_all_var.get(), min(SUPPORTED_FREQS), max(SUPPORTED_FREQS)),
             path_delay_ms=clamp_int(self.path_delay_all_var.get(), 0, 65535),
             v_min=v_min,
