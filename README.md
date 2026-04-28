@@ -2,6 +2,29 @@
 
 Arduino Uno implementation of the ICC model based on StudyProject ICC and path setup patterns.
 
+## Simple controller app
+
+If you want a lightweight desktop controller, run [`simple_controller.py`](simple_controller.py).
+
+It uses a single Tkinter window with:
+
+- serial port selection and connect/disconnect
+- ICC row/col controls with apply-all frequency presets
+- path delay controls with apply-all support
+- a realtime heat map viewer on the right
+
+Install the only extra dependency with:
+
+```powershell
+python -m pip install pyserial
+```
+
+Run it with:
+
+```powershell
+python simple_controller.py
+```
+
 ## What is included
 
 - include/icc.h and src/icc.c: ICC cell state machine model.
