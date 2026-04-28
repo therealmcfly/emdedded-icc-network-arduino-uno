@@ -2,67 +2,134 @@
 #include "icc.h"
 #include "path.h"
 
-#define ICC_H_COUNT 10
-#define ICC_V_COUNT 1
-#define PACEMAKER_CELL_ROW 0
-#define PACEMAKER_CELL_COL 0
-#define PM_SLOWWAVE_INTERVAL 20
-#define OTHER_ICC_SLOWWAVE_INTERVAL 0
-#define TIME_STEP_MS_1D 200U
+#define MAX_V_ICC_COUNT 10
+#define MAX_H_ICC_COUNT 10
 
-static Icc iccs[ICC_V_COUNT][ICC_H_COUNT];
-static IccPath h_paths[ICC_V_COUNT][ICC_H_COUNT - 1];
-static float h_path_t1[ICC_V_COUNT][ICC_H_COUNT - 1];
-static float h_path_t2[ICC_V_COUNT][ICC_H_COUNT - 1];
+#define DEFAULT_ICC_H_COUNT 1
+#define DEFAULT_ICC_V_COUNT 10
+#define DEFAULT_ICC_SLOWWAVE_INTERVAL 20
+
+// #define PACEMAKER_CELL_ROW 0
+// #define PACEMAKER_CELL_COL 0
+// #define DEFAULT_PM_SLOWWAVE_INTERVAL 20
+// #define OTHER_ICC_SLOWWAVE_INTERVAL 0
+#define DEFAULT_TIME_STEP_MS 200U
+
+static Icc iccs[DEFAULT_ICC_V_COUNT][DEFAULT_ICC_H_COUNT];
+static IccPath h_paths[MAX_V_ICC_COUNT][MAX_H_ICC_COUNT - 1];
+static float h_path_t1[MAX_V_ICC_COUNT][MAX_H_ICC_COUNT - 1];
+static float h_path_t2[MAX_V_ICC_COUNT][MAX_H_ICC_COUNT - 1];
+static IccPath v_paths[MAX_V_ICC_COUNT - 1][MAX_H_ICC_COUNT];
+static float v_path_t1[MAX_V_ICC_COUNT - 1][MAX_H_ICC_COUNT];
+static float v_path_t2[MAX_V_ICC_COUNT - 1][MAX_H_ICC_COUNT];
 
 static uint32_t next_step_ms = 0U;
 static uint32_t sample_index = 0U;
 static const uint8_t kPacketHeader[2] = {0xAA, 0x55};
-static const uint16_t kPacketFloatCount = (uint16_t)(ICC_V_COUNT * ICC_H_COUNT);
+static const uint16_t kPacketFloatCount = (uint16_t)(DEFAULT_ICC_V_COUNT * DEFAULT_ICC_H_COUNT);
 
-static void init_icc_network_1d()
+int v_count = DEFAULT_ICC_V_COUNT;
+int h_count = DEFAULT_ICC_H_COUNT;
+uint32_t time_step_ms = DEFAULT_TIME_STEP_MS;
+
+static void init_icc_network_1d(int icc_v_count, int icc_h_count)
 {
-	for (size_t i = 0; i < ICC_V_COUNT; i++)
+	for (size_t i = 0; i < icc_v_count; i++)
 	{
-		for (size_t j = 0; j < ICC_H_COUNT; j++)
+		for (size_t j = 0; j < icc_h_count; j++)
 		{
-			if (i == PACEMAKER_CELL_ROW && j == PACEMAKER_CELL_COL)
+			// if (i == PACEMAKER_CELL_ROW && j == PACEMAKER_CELL_COL)
+			// {
+			// 	icc_init(&iccs[i][j], DEFAULT_PM_SLOWWAVE_INTERVAL);
+			// }
+			// else
+			// {
+			// 	icc_init(&iccs[i][j], OTHER_ICC_SLOWWAVE_INTERVAL);
+			// }
+			icc_init(&iccs[i][j], DEFAULT_ICC_SLOWWAVE_INTERVAL);
+		}
+	}
+
+	if (icc_h_count > 1)
+	{
+		for (size_t i = 0; i < icc_v_count; i++)
+		{
+			for (size_t j = 0; j < icc_h_count - 1; j++)
 			{
-				icc_init(&iccs[i][j], PM_SLOWWAVE_INTERVAL);
-			}
-			else
-			{
-				icc_init(&iccs[i][j], OTHER_ICC_SLOWWAVE_INTERVAL);
+				icc_path_init(&h_paths[i][j], &h_path_t1[i][j], &h_path_t2[i][j]);
+				h_paths[i][j].cells[0] = &iccs[i][j];
+				h_paths[i][j].cells[1] = &iccs[i][j + 1];
 			}
 		}
 	}
 
-	for (size_t i = 0; i < ICC_V_COUNT; i++)
+	if (icc_v_count > 1)
 	{
-		for (size_t j = 0; j < ICC_H_COUNT - 1; j++)
+		for (size_t i = 0; i < icc_v_count - 1; i++)
 		{
-			icc_path_init(&h_paths[i][j], &h_path_t1[i][j], &h_path_t2[i][j]);
-			h_paths[i][j].cells[0] = &iccs[i][j];
-			h_paths[i][j].cells[1] = &iccs[i][j + 1];
+			for (size_t j = 0; j < icc_h_count; j++)
+			{
+				icc_path_init(&v_paths[i][j], &v_path_t1[i][j], &v_path_t2[i][j]);
+				v_paths[i][j].cells[0] = &iccs[i][j];
+				v_paths[i][j].cells[1] = &iccs[i + 1][j];
+			}
 		}
 	}
 }
 
-static void step_icc_network_1d(uint32_t dt_ms)
+static void step_icc_network_1d(uint32_t dt_ms, int icc_v_count, int icc_h_count)
 {
-	for (size_t i = 0; i < ICC_V_COUNT; i++)
+	for (size_t i = 0; i < icc_v_count; i++)
 	{
-		for (size_t j = 0; j < ICC_H_COUNT; j++)
+		for (size_t j = 0; j < icc_h_count; j++)
+		{
+			(void)icc_update(&iccs[i][j], dt_ms);
+		}
+	}
+	if (icc_h_count > 1)
+	{
+		for (size_t i = 0; i < icc_v_count; i++)
+		{
+			for (size_t j = 0; j < icc_h_count - 1; j++)
+			{
+				icc_path_update(&h_paths[i][j], &h_path_t1[i][j], &h_path_t2[i][j], dt_ms);
+			}
+		}
+	}
+	if (icc_v_count > 1)
+	{
+		for (size_t i = 0; i < icc_v_count - 1; i++)
+		{
+			for (size_t j = 0; j < icc_h_count; j++)
+			{
+				icc_path_update(&v_paths[i][j], &v_path_t1[i][j], &v_path_t2[i][j], dt_ms);
+			}
+		}
+	}
+}
+
+static void step_icc_network_2d(uint32_t dt_ms, int icc_v_count, int icc_h_count)
+{
+	for (size_t i = 0; i < icc_v_count; i++)
+	{
+		for (size_t j = 0; j < icc_h_count; j++)
 		{
 			(void)icc_update(&iccs[i][j], dt_ms);
 		}
 	}
 
-	for (size_t i = 0; i < ICC_V_COUNT; i++)
+	for (size_t i = 0; i < icc_v_count; i++)
 	{
-		for (size_t j = 0; j < ICC_H_COUNT - 1; j++)
+		for (size_t j = 0; j < icc_h_count - 1; j++)
 		{
 			icc_path_update(&h_paths[i][j], &h_path_t1[i][j], &h_path_t2[i][j], dt_ms);
+		}
+	}
+	for (size_t i = 0; i < icc_v_count - 1; i++)
+	{
+		for (size_t j = 0; j < icc_h_count; j++)
+		{
+			icc_path_update(&v_paths[i][j], &v_path_t1[i][j], &v_path_t2[i][j], dt_ms);
 		}
 	}
 }
@@ -75,7 +142,7 @@ static void print_telemetry()
 	Serial.print(millis());
 
 	Serial.print(" v=[");
-	for (size_t j = 0; j < ICC_H_COUNT; j++)
+	for (size_t j = 0; j < DEFAULT_ICC_H_COUNT; j++)
 	{
 		if (j > 0)
 		{
@@ -86,7 +153,7 @@ static void print_telemetry()
 	Serial.print(']');
 
 	Serial.print(" s=[");
-	for (size_t j = 0; j < ICC_H_COUNT; j++)
+	for (size_t j = 0; j < DEFAULT_ICC_H_COUNT; j++)
 	{
 		if (j > 0)
 		{
@@ -97,7 +164,7 @@ static void print_telemetry()
 	Serial.print(']');
 
 	Serial.print(" p=[");
-	for (size_t j = 0; j < ICC_H_COUNT - 1; j++)
+	for (size_t j = 0; j < DEFAULT_ICC_H_COUNT - 1; j++)
 	{
 		if (j > 0)
 		{
@@ -108,7 +175,7 @@ static void print_telemetry()
 	Serial.print(']');
 
 	Serial.print(" t1=[");
-	for (size_t j = 0; j < ICC_H_COUNT - 1; j++)
+	for (size_t j = 0; j < DEFAULT_ICC_H_COUNT - 1; j++)
 	{
 		if (j > 0)
 		{
@@ -119,7 +186,7 @@ static void print_telemetry()
 	Serial.print(']');
 
 	Serial.print(" t2=[");
-	for (size_t j = 0; j < ICC_H_COUNT - 1; j++)
+	for (size_t j = 0; j < DEFAULT_ICC_H_COUNT - 1; j++)
 	{
 		if (j > 0)
 		{
@@ -136,9 +203,9 @@ static void print_telemetry()
 static void send_telemetry_packet()
 {
 	Serial.write(kPacketHeader, sizeof(kPacketHeader));
-	for (size_t i = 0; i < ICC_V_COUNT; i++)
+	for (size_t i = 0; i < DEFAULT_ICC_V_COUNT; i++)
 	{
-		for (size_t j = 0; j < ICC_H_COUNT; j++)
+		for (size_t j = 0; j < DEFAULT_ICC_H_COUNT; j++)
 		{
 			Serial.write((const uint8_t *)&iccs[i][j].v, sizeof(iccs[i][j].v));
 		}
@@ -149,8 +216,8 @@ void setup()
 {
 	Serial.begin(115200);
 
-	init_icc_network_1d();
-	next_step_ms = millis() + TIME_STEP_MS_1D;
+	init_icc_network_1d(v_count, h_count);
+	next_step_ms = millis() + time_step_ms;
 
 	Serial.println("embedded-icc-uno: ICC 1D model running");
 	Serial.print("packet_floats=");
@@ -164,8 +231,8 @@ void loop()
 		return;
 	}
 
-	step_icc_network_1d(TIME_STEP_MS_1D);
+	step_icc_network_1d(time_step_ms, v_count, h_count);
 	// print_telemetry();
 	send_telemetry_packet();
-	next_step_ms += TIME_STEP_MS_1D;
+	next_step_ms += time_step_ms;
 }
