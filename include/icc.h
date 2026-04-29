@@ -43,9 +43,8 @@ extern "C"
 		uint32_t wait_ms_accum;
 		bool reset;
 		bool initialized;
-		uint32_t transition_count;
 		float relay;
-		float resting_slope;
+		uint8_t slope_idx;
 	} Icc;
 
 	void icc_init(Icc *icc, uint8_t *pm_sw_interval);

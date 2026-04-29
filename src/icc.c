@@ -1,4 +1,13 @@
 #include "icc.h"
+#include <avr/pgmspace.h>
+
+static const float kRestingSlopes[5] PROGMEM = {
+    0.0f,            /* 0 — disabled (interval = 0) */
+    Q1_SLOP_20SECS,  /* 1 — 20 s */
+    Q1_SLOP_23SECS,  /* 2 — 23 s */
+    Q1_SLOP_30SECS,  /* 3 — 30 s */
+    Q1_SLOP_40SECS,  /* 4 — 40 s */
+};
 
 static float clampf(float x, float lo, float hi)
 {
@@ -28,26 +37,15 @@ void icc_init(Icc *icc, uint8_t *pm_sw_interval)
 	icc->wait_ms_accum = 0U;
 	icc->reset = false;
 	icc->initialized = true;
-	icc->transition_count = 0U;
 	icc->relay = 0.0f;
 
 	switch (*pm_sw_interval)
 	{
-	case 20:
-		icc->resting_slope = Q1_SLOP_20SECS;
-		break;
-	case 23:
-		icc->resting_slope = Q1_SLOP_23SECS;
-		break;
-	case 30:
-		icc->resting_slope = Q1_SLOP_30SECS;
-		break;
-	case 40:
-		icc->resting_slope = Q1_SLOP_40SECS;
-		break;
-	default:
-		icc->resting_slope = 0.0f;
-		break;
+	case 20: icc->slope_idx = 1; break;
+	case 23: icc->slope_idx = 2; break;
+	case 30: icc->slope_idx = 3; break;
+	case 40: icc->slope_idx = 4; break;
+	default: icc->slope_idx = 0; break;
 	}
 }
 
@@ -119,13 +117,12 @@ float icc_update(Icc *icc, uint32_t dt_ms)
 	{
 		icc->reset = !icc->reset;
 		icc->v = icc->vreset;
-		icc->transition_count++;
 	}
 
 	switch (icc->state)
 	{
 	case Q0_RESTING:
-		icc->v += icc->resting_slope * dt_seconds;
+		icc->v += pgm_read_float(&kRestingSlopes[icc->slope_idx]) * dt_seconds;
 		break;
 
 	case Q1_UPSTROKE:
