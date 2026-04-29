@@ -1,149 +1,132 @@
 # embedded-icc-uno
 
-Arduino Uno implementation of the ICC model based on StudyProject ICC and path setup patterns.
+Arduino Mega 2560 implementation of the ICC (Interstitial Cells of Cajal) network model — up to a 10×10 grid of cells with configurable pacemaker intervals and conduction delays.
 
-## Simple controller app
+---
 
-If you want a lightweight desktop controller, run [`simple_controller.py`](simple_controller.py).
+## Repository layout
 
-It uses a single Tkinter window with:
+```
+src/
+  main.cpp       — Arduino runtime: serial init, network step loop, telemetry
+  icc.c          — ICC cell state machine (Q0–Q3 + WAIT)
+  path.c         — IccPath relay model between neighbouring cells
+include/
+  icc.h          — Icc struct, constants, and API
+  path.h         — IccPath struct and API
+controller/
+  controller.py  — Desktop GUI (Python/Tkinter)
+  controller.spec
+  README.md      — Full controller documentation
+```
 
-- serial port selection and connect/disconnect
-- ICC row/col controls with apply-all frequency presets
-- path delay controls with apply-all support
-- a realtime heat map viewer on the right
+---
 
-Install the only extra dependency with:
+## Controller app
+
+A desktop GUI for configuring, initialising, and visualising the ICC network in real time.
+
+See [controller/README.md](controller/README.md) for full documentation.
+
+**Quick start:**
 
 ```powershell
-python -m pip install pyserial
+pip install pyserial
+python controller/controller.py
 ```
 
-Run it with:
+**Standalone executable (no Python required):**
 
 ```powershell
-python simple_controller.py
+pip install pyinstaller
+pyinstaller controller/controller.spec
+# Output: controller/dist/icc-controller.exe
 ```
 
-## What is included
+---
 
-- include/icc.h and src/icc.c: ICC cell state machine model.
-- include/path.h and src/path.c: path relay model between neighboring ICC cells.
-- src/main.cpp: Uno runtime setup and periodic stepping.
+## Firmware
 
-## Current setup in src/main.cpp
-
-The current configuration is single ICC mode:
-
-- ICC_V_COUNT = 1
-- ICC_H_COUNT = 1
-- pacemaker at row 0, col 0
-- TIME_STEP_MS_1D = 200 ms
-
-With one cell, there are no active neighbor paths, so only the single ICC state and voltage evolve.
-
-## Scaling to multiple ICC cells
-
-You can scale by changing the grid size macros in src/main.cpp.
-
-### 1x5 (one row, five cells)
-
-- Set ICC_V_COUNT = 1
-- Set ICC_H_COUNT = 5
-- Set pacemaker location, for example:
-  - PACEMAKER_CELL_ROW = 0
-  - PACEMAKER_CELL_COL = 4
-
-This case is already supported by the current horizontal path code in src/main.cpp.
-
-### 5x5 or 10x10 (multi-row grid)
-
-For ICC_V_COUNT > 1, update src/main.cpp to include vertical paths as well as horizontal paths.
-
-Required additions:
-
-- Vertical path storage:
-  - IccPath v_paths[ICC_V_COUNT - 1][ICC_H_COUNT];
-  - float v_path_t1[ICC_V_COUNT - 1][ICC_H_COUNT];
-  - float v_path_t2[ICC_V_COUNT - 1][ICC_H_COUNT];
-- Vertical path init loop:
-  - connect cells (i,j) to (i+1,j)
-- Vertical path update loop in each time step
-
-Without vertical paths, rows are not connected to each other.
-
-### Example macro sets
-
-1x5:
-
-- ICC_V_COUNT = 1
-- ICC_H_COUNT = 5
-
-5x5:
-
-- ICC_V_COUNT = 5
-- ICC_H_COUNT = 5
-
-10x10:
-
-- ICC_V_COUNT = 10
-- ICC_H_COUNT = 10
-
-### Performance note on Uno
-
-Arduino Uno has limited RAM, so 5x5 and especially 10x10 may be too large depending on logging and extra arrays.
-If memory becomes an issue:
-
-- reduce logging output
-- reduce stored timing arrays
-- test first with 1x5, then 3x3, then 5x5
-- use a board with more RAM (for example, Mega) for large grids
-
-## Enable print logs
-
-In src/main.cpp, inside loop(), make sure this line is enabled:
-
-```cpp
-print_telemetry();
-```
-
-If it is commented as shown below, remove the comment marks:
-
-```cpp
-// print_telemetry();
-```
-
-## Flash to Uno (Windows PowerShell)
-
-Run from the embedded-icc-uno folder:
+### Build and upload (PlatformIO)
 
 ```powershell
 py -m platformio run
 py -m platformio run --target upload
 ```
 
-## See logs from the board
-
-Open serial monitor at 115200 baud:
+### Serial monitor
 
 ```powershell
 py -m platformio device monitor --baud 115200
 ```
 
-If needed, specify port explicitly:
+The firmware does **not** print human-readable text during normal operation. Use the controller app (or any tool that speaks the binary protocol below) to interact with it.
 
-```powershell
-py -m platformio device list
-py -m platformio device monitor --port COM3 --baud 115200
-```
+---
 
-Expected output format per step:
+## Source overview
 
-```text
-sample=123 ms=45678 v=[-63.217] s=[0] p=[] t1=[] t2=[]
-```
+### `src/icc.c` — Cell state machine
 
-Notes:
+Each ICC cell cycles through five states:
 
-- If monitor opens but no data appears, press the Uno reset button once.
-- Only one app can use the COM port at a time; close other serial monitors first.
+| State | Description |
+|---|---|
+| `WAIT` | 5 s startup delay before the cell becomes active |
+| `Q0_RESTING` | Resting; slow downward drift toward the Q1 threshold (pacemakers only) |
+| `Q1_UPSTROKE` | Rapid depolarisation |
+| `Q2_PLATEAU` | Plateau phase |
+| `Q3_REPOLARIZATION` | Repolarisation back toward rest |
+
+**Cell types** (set by `pm_sw_interval` passed to `icc_init`):
+
+| Interval | Type | Behaviour |
+|---|---|---|
+| `-1` | Blocked | Stays in Q0_RESTING; absorbs any relay signal without firing |
+| `0` | Follower | No resting slope; fires only when a relay signal arrives |
+| `15`–`40` | Pacemaker | Autonomous slow-wave at the given approximate period (seconds) |
+
+> Note: periods of 10 s and below are not achievable — the fixed Q1+Q2+Q3 phases consume approximately 10.8 s per cycle.
+
+### `src/path.c` — Conduction paths
+
+`IccPath` connects two adjacent cells. When the upstream cell fires, the path starts a timed relay that triggers the downstream cell after the configured delay.
+
+### `src/main.cpp` — Runtime
+
+- Waits for an `ICCF` init packet over serial before starting.
+- Unpacks rows, cols, timestep, per-cell intervals, and path delays from the packet.
+- Runs `step_icc_network_1d()` at the configured timestep and streams a binary telemetry packet after each step.
+
+---
+
+## Serial protocol
+
+### Init packet (PC → board)
+
+| Bytes | Field |
+|---|---|
+| `49 43 43 46` | ASCII header `ICCF` |
+| 1 | rows (uint8) |
+| 1 | cols (uint8) |
+| 2 | timestep ms (uint16 LE) |
+| rows × cols | per-cell interval (int8, row-major) |
+| rows × (cols−1) × 2 | H-path delays (uint16 LE each), omitted if cols = 1 |
+| (rows−1) × cols × 2 | V-path delays (uint16 LE each), omitted if rows = 1 |
+
+### Telemetry packet (board → PC)
+
+Sent every timestep while running.
+
+| Bytes | Field |
+|---|---|
+| `AA 55` | Sync header |
+| rows × cols × 4 | cell voltages (float32 LE, row-major) |
+
+A cell voltage of exactly `0.0` indicates the WAIT state.
+
+---
+
+## Hardware
+
+Targets **Arduino Mega 2560** (ATmega2560, 8 KB SRAM). The 10×10 grid with path timing arrays fits comfortably in RAM on the Mega; the smaller Uno (2 KB SRAM) is insufficient for grids larger than approximately 3×3.
