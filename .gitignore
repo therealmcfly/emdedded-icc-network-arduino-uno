@@ -64,3 +64,6 @@ dist/
 # Temporary
 *.tmp
 
+#AI settings
+.claude/
+
