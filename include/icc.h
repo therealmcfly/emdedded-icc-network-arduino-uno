@@ -11,6 +11,7 @@ extern "C"
 
 #define Q1_SLOP_20SECS (-0.069979275f)
 #define Q1_SLOP_23SECS (-0.052964706f)
+#define Q1_SLOP_26SECS (-0.044836975f) /* linearly interpolated between 23 s and 30 s — verify against model */
 #define Q1_SLOP_30SECS (-0.0340f)
 #define Q1_SLOP_40SECS (-0.022471698f)
 #define ICC_SLOPE_Q1 (43.5248f)

@@ -1,12 +1,13 @@
 #include "icc.h"
 #include <avr/pgmspace.h>
 
-static const float kRestingSlopes[5] PROGMEM = {
+static const float kRestingSlopes[6] PROGMEM = {
     0.0f,            /* 0 — disabled (interval = 0) */
     Q1_SLOP_20SECS,  /* 1 — 20 s */
     Q1_SLOP_23SECS,  /* 2 — 23 s */
-    Q1_SLOP_30SECS,  /* 3 — 30 s */
-    Q1_SLOP_40SECS,  /* 4 — 40 s */
+    Q1_SLOP_26SECS,  /* 3 — 26 s */
+    Q1_SLOP_30SECS,  /* 4 — 30 s */
+    Q1_SLOP_40SECS,  /* 5 — 40 s */
 };
 
 static float clampf(float x, float lo, float hi)
@@ -43,8 +44,9 @@ void icc_init(Icc *icc, uint8_t *pm_sw_interval)
 	{
 	case 20: icc->slope_idx = 1; break;
 	case 23: icc->slope_idx = 2; break;
-	case 30: icc->slope_idx = 3; break;
-	case 40: icc->slope_idx = 4; break;
+	case 26: icc->slope_idx = 3; break;
+	case 30: icc->slope_idx = 4; break;
+	case 40: icc->slope_idx = 5; break;
 	default: icc->slope_idx = 0; break;
 	}
 }
