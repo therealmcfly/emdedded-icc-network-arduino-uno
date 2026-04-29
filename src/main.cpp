@@ -23,7 +23,7 @@ static IccPath v_paths[MAX_V_ICC_COUNT - 1][MAX_H_ICC_COUNT];
 static float v_path_t1[MAX_V_ICC_COUNT - 1][MAX_H_ICC_COUNT];
 static float v_path_t2[MAX_V_ICC_COUNT - 1][MAX_H_ICC_COUNT];
 
-static uint8_t icc_interval_buff[MAX_V_ICC_COUNT][MAX_H_ICC_COUNT];
+static int8_t icc_interval_buff[MAX_V_ICC_COUNT][MAX_H_ICC_COUNT];
 static uint16_t h_path_delay_buff[MAX_V_ICC_COUNT][MAX_H_ICC_COUNT - 1];
 static uint16_t v_path_delay_buff[MAX_V_ICC_COUNT - 1][MAX_H_ICC_COUNT];
 
@@ -303,7 +303,7 @@ void setup()
 			{
 				while (Serial.available() == 0)
 					;
-				uint8_t interval = Serial.read();
+				int8_t interval = (int8_t)Serial.read();
 				icc_interval_buff[i][j] = interval;
 			}
 		}

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """ICC Board Controller — connect, configure, and visualize an ICC network."""
 
+import json
 import struct
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox, colorchooser
+from tkinter import ttk, messagebox, colorchooser, filedialog
 
 import serial
 import serial.tools.list_ports
@@ -13,11 +14,58 @@ V_MIN = -67.6339
 V_MAX = -24.1091
 BAUD = 115200
 INIT_HEADER = b'ICCF'
-INTERVALS = ('0', '20', '23', '26', '30', '40')
+INTERVALS = ('-1', '0', '15', '20', '23', '26', '30', '40')
 MAX_ROWS = 10
 MAX_COLS = 10
 CELL_PX = 56
 LABEL_PX = 22
+
+THEMES = {
+    'Dark': {
+        'bg':               '#1e1e1e',
+        'fg':               '#d4d4d4',
+        'fb':               '#2d2d2d',
+        'disabled_fb':      '#1a1a1a',
+        'border':           '#3c3c3c',
+        'trough':           '#3c3c3c',
+        'lf_border':        '#444444',
+        'lf_label':         '#9cdcfe',
+        'btn_bg':           '#3c3c3c',
+        'btn_active':       '#505050',
+        'canvas_bg':        '#121212',
+        'cell_inactive':    '#1a1a1a',
+        'cell_wait':        '#1a2e4a',
+        'cell_active_mono': '#3a3a3a',
+        'wait_text':        '#4a8ab5',
+        'axis_label':       '#555555',
+        'status_fg':        '#888888',
+        'pkt_fg':           '#4ec9b0',
+        'cb_list_bg':       '#2d2d2d',
+        'cb_list_fg':       '#d4d4d4',
+    },
+    'Light': {
+        'bg':               '#f3f3f3',
+        'fg':               '#333333',
+        'fb':               '#ffffff',
+        'disabled_fb':      '#e0e0e0',
+        'border':           '#cccccc',
+        'trough':           '#dddddd',
+        'lf_border':        '#aaaaaa',
+        'lf_label':         '#0070c0',
+        'btn_bg':           '#e0e0e0',
+        'btn_active':       '#d0d0d0',
+        'canvas_bg':        '#e8e8e8',
+        'cell_inactive':    '#d0d0d0',
+        'cell_wait':        '#b0cce8',
+        'cell_active_mono': '#909090',
+        'wait_text':        '#1060a0',
+        'axis_label':       '#888888',
+        'status_fg':        '#555555',
+        'pkt_fg':           '#007060',
+        'cb_list_bg':       '#ffffff',
+        'cb_list_fg':       '#333333',
+    },
+}
 
 
 def build_init_packet(rows, cols, step_ms, intervals, h_delays, v_delays):
@@ -31,7 +79,7 @@ def build_init_packet(rows, cols, step_ms, intervals, h_delays, v_delays):
     buf += struct.pack('<H', step_ms)
     for r in range(rows):
         for c in range(cols):
-            buf.append(intervals[r][c])
+            buf += struct.pack('<b', intervals[r][c])
     if cols > 1:
         for r in range(rows):
             for c in range(cols - 1):
@@ -57,8 +105,11 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title('ICC Board Controller')
-        self.configure(bg='#1e1e1e')
         self.resizable(True, True)
+
+        self._theme_var = tk.StringVar(value='Dark')
+        self._theme = THEMES['Dark']
+        self.configure(bg=self._theme['bg'])
 
         self._ser = None
         self._alive = False
@@ -76,7 +127,10 @@ class App(tk.Tk):
         self._show_values_var = tk.BooleanVar(value=True)
         self._show_colors_var = tk.BooleanVar(value=True)
         self._show_grid_var = tk.BooleanVar(value=False)
-        self._value_color = '#ffffff'
+        self._show_inactive_var = tk.BooleanVar(value=True)
+        self._value_color = '#000000'
+        self._cell_bg_color = '#ffffff'
+        self._blocked_color = '#555555'
 
         self._paned = ttk.PanedWindow(self, orient='horizontal')
         self._paned.pack(fill='both', expand=True)
@@ -88,44 +142,64 @@ class App(tk.Tk):
     # ── theme ─────────────────────────────────────────────────────────────────
 
     def _apply_style(self):
+        t = self._theme
         s = ttk.Style(self)
         s.theme_use('clam')
-        bg, fg, fb = '#1e1e1e', '#d4d4d4', '#2d2d2d'
+        bg, fg, fb = t['bg'], t['fg'], t['fb']
         s.configure('.', background=bg, foreground=fg, fieldbackground=fb,
-                    bordercolor='#3c3c3c', troughcolor='#3c3c3c', relief='flat')
+                    bordercolor=t['border'], troughcolor=t['trough'], relief='flat')
         s.configure('TLabel', background=bg, foreground=fg)
         s.configure('TFrame', background=bg)
-        s.configure('TLabelframe', background=bg, bordercolor='#444')
-        s.configure('TLabelframe.Label', background=bg, foreground='#9cdcfe')
-        s.configure('TButton', background='#3c3c3c', foreground=fg,
+        s.configure('TLabelframe', background=bg, bordercolor=t['lf_border'])
+        s.configure('TLabelframe.Label', background=bg, foreground=t['lf_label'])
+        s.configure('TButton', background=t['btn_bg'], foreground=fg,
                     relief='flat', padding=4)
-        s.map('TButton', background=[('active', '#505050')])
+        s.map('TButton', background=[('active', t['btn_active'])])
         s.configure('Accent.TButton', background='#0e639c', foreground='white',
                     relief='flat', padding=4)
         s.map('Accent.TButton',
-              background=[('active', '#1177bb'), ('disabled', '#2a2a2a')],
-              foreground=[('disabled', '#555')])
+              background=[('active', '#1177bb'), ('disabled', '#555555')],
+              foreground=[('disabled', '#aaaaaa')])
         s.configure('TCombobox', fieldbackground=fb, foreground=fg,
                     selectbackground='#0e639c', relief='flat')
         s.map('TCombobox',
-              fieldbackground=[('readonly', fb), ('disabled', '#1a1a1a')],
-              foreground=[('readonly', fg), ('disabled', '#555')],
+              fieldbackground=[('readonly', fb), ('disabled', t['disabled_fb'])],
+              foreground=[('readonly', fg), ('disabled', t['axis_label'])],
               selectforeground=[('readonly', 'white')])
         s.configure('TSpinbox', fieldbackground=fb, foreground=fg)
         s.configure('TCheckbutton', background=bg, foreground=fg)
         s.map('TCheckbutton', background=[('active', bg), ('pressed', bg)])
-        self.option_add('*TCombobox*Listbox.background', '#2d2d2d')
-        self.option_add('*TCombobox*Listbox.foreground', '#d4d4d4')
-        self.option_add('*TCombobox*Listbox.selectBackground', '#0e639c')
-        self.option_add('*TCombobox*Listbox.selectForeground', 'white')
+        self.option_add('*TCombobox*Listbox.background', t['cb_list_bg'], 80)
+        self.option_add('*TCombobox*Listbox.foreground', t['cb_list_fg'], 80)
+        self.option_add('*TCombobox*Listbox.selectBackground', '#0e639c', 80)
+        self.option_add('*TCombobox*Listbox.selectForeground', 'white', 80)
+
+    def _apply_theme(self, *_):
+        self._theme = THEMES[self._theme_var.get()]
+        self._apply_style()
+        t = self._theme
+        self.configure(bg=t['bg'])
+        self._left_container.configure(bg=t['bg'])
+        self._lcv.configure(bg=t['bg'])
+        self._canvas.configure(bg=t['canvas_bg'])
+        for iid in self._col_label_ids + self._row_label_ids:
+            self._canvas.itemconfig(iid, fill=t['axis_label'])
+        if hasattr(self, '_cells'):
+            inactive_fill = t['cell_inactive'] if self._show_inactive_var.get() else t['canvas_bg']
+            for rid in self._cells.values():
+                self._canvas.itemconfig(rid, fill=inactive_fill, outline='')
+        if hasattr(self, '_status_lbl'):
+            self._status_lbl.configure(foreground=t['status_fg'])
+            self._pkt_lbl.configure(foreground=t['pkt_fg'])
 
     # ── left panel (scrollable) ───────────────────────────────────────────────
 
     def _build_left(self):
-        container = tk.Frame(self._paned, bg='#1e1e1e')
+        container = tk.Frame(self._paned, bg=self._theme['bg'])
+        self._left_container = container
         self._paned.add(container, weight=0)
 
-        self._lcv = tk.Canvas(container, bg='#1e1e1e',
+        self._lcv = tk.Canvas(container, bg=self._theme['bg'],
                                highlightthickness=0, width=420)
         vsb = ttk.Scrollbar(container, orient='vertical', command=self._lcv.yview)
         hsb = ttk.Scrollbar(container, orient='horizontal', command=self._lcv.xview)
@@ -150,16 +224,21 @@ class App(tk.Tk):
                             lambda e: self._lcv.yview_scroll(
                                 int(-1 * (e.delta / 120)), 'units') or 'break')
 
+        self._build_theme_selector(self._left)
         self._build_conn(self._left)
-        self._init_btn = ttk.Button(self._left, text='Initialize Board',
-                                     style='Accent.TButton',
-                                     command=self._send_init, state='disabled')
-        self._init_btn.pack(fill='x', pady=(0, 6))
-        self._build_grid_config(self._left)
-        self._build_intervals(self._left)
-        self._build_hpath_section(self._left)
-        self._build_vpath_section(self._left)
+        self._build_icc_grid_settings(self._left)
         self.after(100, self._fit_left_panel)
+
+    # ── theme selector ────────────────────────────────────────────────────────
+
+    def _build_theme_selector(self, parent):
+        row = ttk.Frame(parent)
+        row.pack(fill='x', pady=(0, 6))
+        ttk.Label(row, text='Theme:').pack(side='left')
+        ttk.Combobox(row, textvariable=self._theme_var,
+                     values=list(THEMES.keys()), width=6,
+                     state='readonly').pack(side='left', padx=4)
+        self._theme_var.trace_add('write', self._apply_theme)
 
     # ── connection ────────────────────────────────────────────────────────────
 
@@ -180,10 +259,26 @@ class App(tk.Tk):
                                      command=self._toggle_conn)
         self._conn_btn.pack(fill='x')
 
+    # ── ICC grid settings (grouped) ───────────────────────────────────────────
+
+    def _build_icc_grid_settings(self, parent):
+        lf = ttk.LabelFrame(parent, text='ICC Grid Settings', padding=6)
+        lf.pack(fill='x', pady=(0, 6))
+
+        self._init_btn = ttk.Button(lf, text='Initialize Board',
+                                     style='Accent.TButton',
+                                     command=self._send_init, state='disabled')
+        self._init_btn.pack(fill='x', pady=(0, 6))
+
+        self._build_grid_config(lf)
+        self._build_intervals(lf)
+        self._build_hpath_section(lf)
+        self._build_vpath_section(lf)
+
     # ── grid config ───────────────────────────────────────────────────────────
 
     def _build_grid_config(self, parent):
-        lf = ttk.LabelFrame(parent, text='Grid', padding=6)
+        lf = ttk.LabelFrame(parent, text='General', padding=6)
         lf.pack(fill='x', pady=(0, 6))
 
         r1 = ttk.Frame(lf)
@@ -203,6 +298,8 @@ class App(tk.Tk):
         self._step_var = tk.IntVar(value=200)
         ttk.Spinbox(r2, from_=50, to=5000, increment=50,
                     textvariable=self._step_var, width=6).pack(side='left', padx=3)
+        ttk.Button(r2, text='Save', command=self._save_settings).pack(side='left', padx=(8, 2))
+        ttk.Button(r2, text='Load', command=self._load_settings).pack(side='left')
 
         # Rebuild all grids when dimensions change.
         self._rows_var.trace_add('write', lambda *_: self._schedule_rebuild())
@@ -217,10 +314,13 @@ class App(tk.Tk):
         aa = ttk.Frame(lf)
         aa.pack(fill='x', pady=(0, 4))
         ttk.Label(aa, text='All cells:').pack(side='left')
-        self._iv_all_var = tk.StringVar(value='20')
+        self._iv_all_var = tk.StringVar(value='0')
         ttk.Combobox(aa, textvariable=self._iv_all_var, values=INTERVALS,
                      width=3, state='readonly').pack(side='left', padx=4)
         ttk.Button(aa, text='Apply', command=self._apply_all_intervals).pack(side='left')
+
+        ttk.Label(lf, text='-1 = inactive, unresponsive cell',
+                  foreground='#888888', font=('TkDefaultFont', 8)).pack(anchor='w', pady=(0, 4))
 
         self._iv_frame = ttk.Frame(lf)
         self._iv_frame.pack(fill='x')
@@ -368,6 +468,7 @@ class App(tk.Tk):
         lf = ttk.LabelFrame(parent, text='Live Viewer Settings', padding=6)
         lf.pack(fill='x', pady=(6, 0))
 
+        # All toggles on one row
         tr = ttk.Frame(lf)
         tr.pack(fill='x', pady=(0, 6))
         ttk.Checkbutton(tr, text='Show values',
@@ -375,10 +476,12 @@ class App(tk.Tk):
         ttk.Checkbutton(tr, text='Show colors',
                         variable=self._show_colors_var).pack(side='left', padx=(0, 12))
         ttk.Checkbutton(tr, text='Show grid',
-                        variable=self._show_grid_var).pack(side='left')
+                        variable=self._show_grid_var).pack(side='left', padx=(0, 12))
+        ttk.Checkbutton(tr, text='Show inactive cells',
+                        variable=self._show_inactive_var).pack(side='left')
 
         vr = ttk.Frame(lf)
-        vr.pack(fill='x', pady=(0, 6))
+        vr.pack(fill='x', pady=(0, 8))
         ttk.Label(vr, text='V min').pack(side='left')
         self._v_min_var = tk.DoubleVar(value=V_MIN)
         ttk.Spinbox(vr, from_=-200.0, to=0.0, increment=0.5, format='%.1f',
@@ -388,29 +491,42 @@ class App(tk.Tk):
         ttk.Spinbox(vr, from_=-200.0, to=0.0, increment=0.5, format='%.1f',
                     textvariable=self._v_max_var, width=7).pack(side='left', padx=3)
 
-        cr = ttk.Frame(lf)
-        cr.pack(fill='x', pady=(0, 6))
-        self._lo_swatch = tk.Label(cr, bg=self._color_lo, width=3, relief='solid')
-        self._lo_swatch.pack(side='left', padx=(0, 4))
-        ttk.Button(cr, text='Low color',
-                   command=self._pick_lo_color).pack(side='left', padx=(0, 12))
-        self._hi_swatch = tk.Label(cr, bg=self._color_hi, width=3, relief='solid')
-        self._hi_swatch.pack(side='left', padx=(0, 4))
-        ttk.Button(cr, text='High color',
-                   command=self._pick_hi_color).pack(side='left')
+        # Color pickers: 2-column grid
+        cg = ttk.Frame(lf)
+        cg.pack(fill='x')
 
-        vcr = ttk.Frame(lf)
-        vcr.pack(fill='x')
-        self._value_color_swatch = tk.Label(vcr, bg=self._value_color, width=3, relief='solid')
-        self._value_color_swatch.pack(side='left', padx=(0, 4))
-        ttk.Button(vcr, text='Value text color',
-                   command=self._pick_value_color).pack(side='left')
+        def _color_row(parent_grid, row, col, swatch_attr, color_val, label, cmd, padx_right=16):
+            f = ttk.Frame(parent_grid)
+            f.grid(row=row, column=col, sticky='w',
+                   padx=(0, padx_right if col == 0 else 0), pady=(0, 6))
+            sw = tk.Label(f, bg=color_val, width=3, relief='solid')
+            sw.pack(side='left', padx=(0, 4))
+            setattr(self, swatch_attr, sw)
+            ttk.Button(f, text=label, command=cmd).pack(side='left')
+
+        _color_row(cg, 0, 0, '_lo_swatch',          self._color_lo,      'Low color',        self._pick_lo_color)
+        _color_row(cg, 0, 1, '_hi_swatch',          self._color_hi,      'High color',       self._pick_hi_color)
+        _color_row(cg, 1, 0, '_value_color_swatch', self._value_color,   'Value text color', self._pick_value_color)
+        _color_row(cg, 1, 1, '_cell_bg_swatch',     self._cell_bg_color, 'Background color', self._pick_cell_bg_color)
+        _color_row(cg, 2, 0, '_blocked_swatch',     self._blocked_color, 'Blocked cell color', self._pick_blocked_color, padx_right=0)
 
     def _pick_value_color(self):
         result = colorchooser.askcolor(color=self._value_color, title='Value text colour')
         if result[1]:
             self._value_color = result[1]
             self._value_color_swatch.configure(bg=self._value_color)
+
+    def _pick_cell_bg_color(self):
+        result = colorchooser.askcolor(color=self._cell_bg_color, title='Cell background colour')
+        if result[1]:
+            self._cell_bg_color = result[1]
+            self._cell_bg_swatch.configure(bg=self._cell_bg_color)
+
+    def _pick_blocked_color(self):
+        result = colorchooser.askcolor(color=self._blocked_color, title='Blocked cell colour')
+        if result[1]:
+            self._blocked_color = result[1]
+            self._blocked_swatch.configure(bg=self._blocked_color)
 
     def _pick_lo_color(self):
         result = colorchooser.askcolor(color=self._color_lo, title='Low voltage colour')
@@ -434,6 +550,13 @@ class App(tk.Tk):
     def _do_rebuild(self):
         self._rebuild_pending = None
         self._rebuild_all()
+        try:
+            rows = max(1, min(MAX_ROWS, int(self._rows_var.get())))
+            cols = max(1, min(MAX_COLS, int(self._cols_var.get())))
+            if hasattr(self, '_canvas'):
+                self._resize_canvas(rows, cols)
+        except (tk.TclError, ValueError):
+            pass
 
     def _rebuild_all(self):
         if hasattr(self, '_iv_frame'):
@@ -442,6 +565,16 @@ class App(tk.Tk):
             self._rebuild_hpath_grid()
         if hasattr(self, '_vpath_frame'):
             self._rebuild_vpath_grid()
+
+    def _resize_canvas(self, rows, cols):
+        cw = LABEL_PX + cols * CELL_PX
+        ch = LABEL_PX + rows * CELL_PX
+        self._canvas.configure(width=cw, height=ch)
+        for c, iid in enumerate(self._col_label_ids):
+            self._canvas.itemconfig(iid, state='normal' if c < cols else 'hidden')
+        for r, iid in enumerate(self._row_label_ids):
+            self._canvas.itemconfig(iid, state='normal' if r < rows else 'hidden')
+        self.after(50, self._fit_window)
 
     def _fit_left_panel(self):
         self.update_idletasks()
@@ -468,22 +601,28 @@ class App(tk.Tk):
 
         cw = LABEL_PX + MAX_COLS * CELL_PX
         ch = LABEL_PX + MAX_ROWS * CELL_PX
-        self._canvas = tk.Canvas(lf, bg='#121212', highlightthickness=0,
+        self._canvas = tk.Canvas(lf, bg=self._theme['canvas_bg'], highlightthickness=0,
                                   width=cw, height=ch)
-        self._canvas.pack()
+        self._canvas.pack(fill='x')
         self._build_display(lf)
 
         self._cells = {}
         self._ctexts = {}
+        self._col_label_ids = []
+        self._row_label_ids = []
 
         for c in range(MAX_COLS):
             x = LABEL_PX + c * CELL_PX + CELL_PX // 2
-            self._canvas.create_text(x, LABEL_PX // 2, text=str(c),
-                                      fill='#555', font=('Consolas', 8))
+            iid = self._canvas.create_text(x, LABEL_PX // 2, text=str(c),
+                                            fill=self._theme['axis_label'],
+                                            font=('Consolas', 8))
+            self._col_label_ids.append(iid)
         for r in range(MAX_ROWS):
             y = LABEL_PX + r * CELL_PX + CELL_PX // 2
-            self._canvas.create_text(LABEL_PX // 2, y, text=str(r),
-                                      fill='#555', font=('Consolas', 8))
+            iid = self._canvas.create_text(LABEL_PX // 2, y, text=str(r),
+                                            fill=self._theme['axis_label'],
+                                            font=('Consolas', 8))
+            self._row_label_ids.append(iid)
 
         for r in range(MAX_ROWS):
             for c in range(MAX_COLS):
@@ -491,25 +630,29 @@ class App(tk.Tk):
                 y0 = LABEL_PX + r * CELL_PX
                 rid = self._canvas.create_rectangle(
                     x0, y0, x0 + CELL_PX, y0 + CELL_PX,
-                    fill='#1a1a1a', outline='')
+                    fill=self._theme['cell_inactive'], outline='')
                 tid = self._canvas.create_text(
                     x0 + CELL_PX // 2, y0 + CELL_PX // 2,
-                    text='', fill='#444', font=('Consolas', 8))
+                    text='', fill=self._theme['axis_label'], font=('Consolas', 8))
                 self._cells[(r, c)] = rid
                 self._ctexts[(r, c)] = tid
 
         bar = ttk.Frame(right)
         bar.pack(fill='x', pady=(4, 0))
         self._status_var = tk.StringVar(value='Disconnected')
-        ttk.Label(bar, textvariable=self._status_var, foreground='#888').pack(side='left')
+        self._status_lbl = ttk.Label(bar, textvariable=self._status_var,
+                                      foreground=self._theme['status_fg'])
+        self._status_lbl.pack(side='left')
         self._pkt_var = tk.StringVar(value='')
-        ttk.Label(bar, textvariable=self._pkt_var, foreground='#4ec9b0').pack(side='right')
+        self._pkt_lbl = ttk.Label(bar, textvariable=self._pkt_var,
+                                   foreground=self._theme['pkt_fg'])
+        self._pkt_lbl.pack(side='right')
 
     # ── voltage → colour ──────────────────────────────────────────────────────
 
     def _v_to_color(self, v):
         if v == 0.0:
-            return '#1a2e4a'   # WAIT state — distinct from inactive cells
+            return self._theme['cell_wait']
         try:
             v_min = float(self._v_min_var.get())
             v_max = float(self._v_max_var.get())
@@ -611,6 +754,7 @@ class App(tk.Tk):
         self._rows = rows
         self._cols = cols
         self._pkt_count = 0
+        self._resize_canvas(rows, cols)
         self._ser.reset_input_buffer()
         self._ser.write(packet)
         self._status_var.set(f'Running  {rows}×{cols}  step={step} ms')
@@ -660,23 +804,117 @@ class App(tk.Tk):
     def _on_voltages(self, rows, cols, voltages):
         show_v = self._show_values_var.get()
         show_c = self._show_colors_var.get()
+        show_inactive = self._show_inactive_var.get()
         grid_outline = '#444444' if self._show_grid_var.get() else ''
+        t = self._theme
         for r in range(MAX_ROWS):
             for c in range(MAX_COLS):
                 rid = self._cells[(r, c)]
                 tid = self._ctexts[(r, c)]
                 if r < rows and c < cols:
-                    v = voltages[r * cols + c]
-                    is_wait = (v == 0.0)
-                    fill = self._v_to_color(v) if show_c else ('#1a2e4a' if is_wait else '#3a3a3a')
-                    self._canvas.itemconfig(rid, fill=fill, outline=grid_outline)
-                    self._canvas.itemconfig(
-                        tid,
-                        text=('WAIT' if is_wait else f'{v:.1f}') if show_v else '',
-                        fill='#4a8ab5' if is_wait else self._value_color)
+                    is_blocked = (r < len(self._iv_vars) and
+                                  c < len(self._iv_vars[r]) and
+                                  self._iv_vars[r][c].get() == '-1')
+                    if is_blocked:
+                        fill = t['canvas_bg'] if not show_inactive else self._blocked_color
+                        self._canvas.itemconfig(rid, fill=fill, outline='')
+                        self._canvas.itemconfig(tid, text='')
+                    else:
+                        v = voltages[r * cols + c]
+                        is_wait = (v == 0.0)
+                        fill = self._v_to_color(v) if show_c else self._cell_bg_color
+                        self._canvas.itemconfig(rid, fill=fill, outline=grid_outline)
+                        self._canvas.itemconfig(
+                            tid,
+                            text=('WAIT' if is_wait else f'{v:.1f}') if show_v else '',
+                            fill=t['wait_text'] if is_wait else self._value_color)
                 else:
-                    self._canvas.itemconfig(rid, fill='#1a1a1a', outline='')
+                    inactive_fill = t['cell_inactive'] if show_inactive else t['canvas_bg']
+                    self._canvas.itemconfig(rid, fill=inactive_fill, outline='')
                     self._canvas.itemconfig(tid, text='')
+
+    # ── save / load settings ──────────────────────────────────────────────────
+
+    def _save_settings(self):
+        path = filedialog.asksaveasfilename(
+            defaultextension='.json',
+            filetypes=[('JSON files', '*.json'), ('All files', '*.*')],
+            title='Save ICC Grid Settings')
+        if not path:
+            return
+        try:
+            rows = max(1, min(MAX_ROWS, int(self._rows_var.get())))
+            cols = max(1, min(MAX_COLS, int(self._cols_var.get())))
+            step = int(self._step_var.get())
+        except (tk.TclError, ValueError) as exc:
+            messagebox.showerror('Invalid input', str(exc))
+            return
+        intervals = [[int(self._iv_vars[r][c].get()) for c in range(cols)]
+                     for r in range(rows)]
+        h_delays = ([[self._hpath_vars[r][c].get() for c in range(cols - 1)]
+                     for r in range(rows)]
+                    if cols > 1 and self._hpath_vars else [])
+        v_delays = ([[self._vpath_vars[r][c].get() for c in range(cols)]
+                     for r in range(rows - 1)]
+                    if rows > 1 and self._vpath_vars else [])
+        data = {
+            'rows': rows,
+            'cols': cols,
+            'step_ms': step,
+            'intervals': intervals,
+            'h_delays': h_delays,
+            'v_delays': v_delays,
+        }
+        try:
+            with open(path, 'w') as f:
+                json.dump(data, f, indent=2)
+        except OSError as exc:
+            messagebox.showerror('Save failed', str(exc))
+
+    def _load_settings(self):
+        path = filedialog.askopenfilename(
+            filetypes=[('JSON files', '*.json'), ('All files', '*.*')],
+            title='Load ICC Grid Settings')
+        if not path:
+            return
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            messagebox.showerror('Load failed', str(exc))
+            return
+        try:
+            rows = max(1, min(MAX_ROWS, int(data['rows'])))
+            cols = max(1, min(MAX_COLS, int(data['cols'])))
+            step = int(data['step_ms'])
+        except (KeyError, ValueError) as exc:
+            messagebox.showerror('Invalid file', str(exc))
+            return
+
+        self._rows_var.set(rows)
+        self._cols_var.set(cols)
+        self._step_var.set(step)
+
+        if self._rebuild_pending is not None:
+            self.after_cancel(self._rebuild_pending)
+            self._rebuild_pending = None
+        self._rebuild_all()
+        self._resize_canvas(rows, cols)
+
+        for r, row_vals in enumerate(data.get('intervals', [])):
+            for c, val in enumerate(row_vals):
+                if r < len(self._iv_vars) and c < len(self._iv_vars[r]):
+                    self._iv_vars[r][c].set(str(val))
+
+        for r, row_vals in enumerate(data.get('h_delays', [])):
+            for c, val in enumerate(row_vals):
+                if self._hpath_vars and r < len(self._hpath_vars) and c < len(self._hpath_vars[r]):
+                    self._hpath_vars[r][c].set(int(val))
+
+        for r, row_vals in enumerate(data.get('v_delays', [])):
+            for c, val in enumerate(row_vals):
+                if self._vpath_vars and r < len(self._vpath_vars) and c < len(self._vpath_vars[r]):
+                    self._vpath_vars[r][c].set(int(val))
 
     def on_close(self):
         self._do_disconnect()

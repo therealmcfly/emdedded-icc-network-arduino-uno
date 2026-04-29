@@ -9,6 +9,7 @@ extern "C"
 {
 #endif
 
+#define Q1_SLOP_15SECS (-0.152394f)     /* derived: slope = -0.6455/(15-10.765) — verify against model */
 #define Q1_SLOP_20SECS (-0.069979275f)
 #define Q1_SLOP_23SECS (-0.052964706f)
 #define Q1_SLOP_26SECS (-0.044836975f) /* linearly interpolated between 23 s and 30 s — verify against model */
@@ -44,11 +45,11 @@ extern "C"
 		uint32_t wait_ms_accum;
 		bool reset;
 		bool initialized;
-		float relay;
-		uint8_t slope_idx;
+		int8_t relay;
+		int8_t slope_idx;
 	} Icc;
 
-	void icc_init(Icc *icc, uint8_t *pm_sw_interval);
+	void icc_init(Icc *icc, int8_t *pm_sw_interval);
 	float icc_update(Icc *icc, uint32_t dt_ms);
 	uint8_t icc_state_index(const Icc *icc);
 

@@ -1,13 +1,14 @@
 #include "icc.h"
 #include <avr/pgmspace.h>
 
-static const float kRestingSlopes[6] PROGMEM = {
+static const float kRestingSlopes[7] PROGMEM = {
 		0.0f,						/* 0 — disabled (interval = 0) */
-		Q1_SLOP_20SECS, /* 1 — 20 s */
-		Q1_SLOP_23SECS, /* 2 — 23 s */
-		Q1_SLOP_26SECS, /* 3 — 26 s */
-		Q1_SLOP_30SECS, /* 4 — 30 s */
-		Q1_SLOP_40SECS, /* 5 — 40 s */
+		Q1_SLOP_15SECS, //
+		Q1_SLOP_20SECS,
+		Q1_SLOP_23SECS,
+		Q1_SLOP_26SECS,
+		Q1_SLOP_30SECS,
+		Q1_SLOP_40SECS,
 };
 
 static float clampf(float x, float lo, float hi)
@@ -23,7 +24,7 @@ static float clampf(float x, float lo, float hi)
 	return x;
 }
 
-void icc_init(Icc *icc, uint8_t *pm_sw_interval)
+void icc_init(Icc *icc, int8_t *pm_sw_interval)
 {
 	if (icc == 0)
 	{
@@ -38,24 +39,30 @@ void icc_init(Icc *icc, uint8_t *pm_sw_interval)
 	icc->wait_ms_accum = 0U;
 	icc->reset = false;
 	icc->initialized = true;
-	icc->relay = 0.0f;
+	icc->relay = 0;
 
 	switch (*pm_sw_interval)
 	{
-	case 20:
+	case 15:
 		icc->slope_idx = 1;
 		break;
-	case 23:
+	case 20:
 		icc->slope_idx = 2;
 		break;
-	case 26:
+	case 23:
 		icc->slope_idx = 3;
 		break;
-	case 30:
+	case 26:
 		icc->slope_idx = 4;
 		break;
-	case 40:
+	case 30:
 		icc->slope_idx = 5;
+		break;
+	case 40:
+		icc->slope_idx = 6;
+		break;
+	case -1:
+		icc->slope_idx = -1; /* blocked — never fires, ignores relay */
 		break;
 	default:
 		icc->slope_idx = 0;
@@ -76,19 +83,24 @@ float icc_update(Icc *icc, uint32_t dt_ms)
 	switch (icc->state)
 	{
 	case Q0_RESTING:
-		if (icc->relay > 0.0f || icc->v < ICC_THRESHOLD_Q0_TO_Q1)
+		if (icc->relay > 0 || icc->v < ICC_THRESHOLD_Q0_TO_Q1)
 		{
+			if (icc->slope_idx == -1)
+			{
+				icc->relay = 0; /* blocked cell — absorb relay, stay in Q0 */
+				break;
+			}
 			icc->vreset = icc->v;
 			icc->vmax = ICC_THRESHOLD_Q1_TO_Q2;
 			icc->d2 = ICC_SLOPE_Q2;
 			icc->state = Q1_UPSTROKE;
 			did_reset = true;
-			icc->relay = 0.0f;
+			icc->relay = 0;
 		}
 		break;
 
 	case Q1_UPSTROKE:
-		icc->relay = 0.0f;
+		icc->relay = 0;
 		if (icc->v >= icc->vmax)
 		{
 			icc->vreset = icc->v;
@@ -98,7 +110,7 @@ float icc_update(Icc *icc, uint32_t dt_ms)
 		break;
 
 	case Q2_PLATEAU:
-		icc->relay = 0.0f;
+		icc->relay = 0;
 		if (icc->v < ICC_THRESHOLD_Q2_TO_Q3)
 		{
 			icc->vreset = icc->v;
@@ -108,7 +120,7 @@ float icc_update(Icc *icc, uint32_t dt_ms)
 		break;
 
 	case Q3_REPOLARIZATION:
-		icc->relay = 0.0f;
+		icc->relay = 0;
 		if (icc->v < ICC_THRESHOLD_Q3_TO_Q0)
 		{
 			icc->vreset = icc->v;
@@ -139,7 +151,8 @@ float icc_update(Icc *icc, uint32_t dt_ms)
 	switch (icc->state)
 	{
 	case Q0_RESTING:
-		icc->v += pgm_read_float(&kRestingSlopes[icc->slope_idx]) * dt_seconds;
+		if (icc->slope_idx > 0)
+			icc->v += pgm_read_float(&kRestingSlopes[icc->slope_idx]) * dt_seconds;
 		break;
 
 	case Q1_UPSTROKE:
