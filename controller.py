@@ -73,6 +73,13 @@ class App(tk.Tk):
         self._color_hi = '#0000ff'
         self._rebuild_pending = None
 
+        self._show_values_var = tk.BooleanVar(value=True)
+        self._show_colors_var = tk.BooleanVar(value=True)
+        self._show_grid_var = tk.BooleanVar(value=False)
+        self._value_color = '#ffffff'
+
+        self._paned = ttk.PanedWindow(self, orient='horizontal')
+        self._paned.pack(fill='both', expand=True)
         self._apply_style()
         self._build_left()
         self._build_right()
@@ -105,6 +112,8 @@ class App(tk.Tk):
               foreground=[('readonly', fg), ('disabled', '#555')],
               selectforeground=[('readonly', 'white')])
         s.configure('TSpinbox', fieldbackground=fb, foreground=fg)
+        s.configure('TCheckbutton', background=bg, foreground=fg)
+        s.map('TCheckbutton', background=[('active', bg), ('pressed', bg)])
         self.option_add('*TCombobox*Listbox.background', '#2d2d2d')
         self.option_add('*TCombobox*Listbox.foreground', '#d4d4d4')
         self.option_add('*TCombobox*Listbox.selectBackground', '#0e639c')
@@ -113,10 +122,8 @@ class App(tk.Tk):
     # ── left panel (scrollable) ───────────────────────────────────────────────
 
     def _build_left(self):
-        container = tk.Frame(self, bg='#1e1e1e')
-        container.grid(row=0, column=0, sticky='nsew')
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_columnconfigure(0, weight=0)
+        container = tk.Frame(self._paned, bg='#1e1e1e')
+        self._paned.add(container, weight=0)
 
         self._lcv = tk.Canvas(container, bg='#1e1e1e',
                                highlightthickness=0, width=420)
@@ -152,7 +159,7 @@ class App(tk.Tk):
         self._build_intervals(self._left)
         self._build_hpath_section(self._left)
         self._build_vpath_section(self._left)
-        self._build_display(self._left)
+        self.after(100, self._fit_left_panel)
 
     # ── connection ────────────────────────────────────────────────────────────
 
@@ -256,7 +263,7 @@ class App(tk.Tk):
         aa = ttk.Frame(lf)
         aa.pack(fill='x', pady=(0, 4))
         ttk.Label(aa, text='All H-paths:').pack(side='left')
-        self._hd_all_var = tk.IntVar(value=2000)
+        self._hd_all_var = tk.IntVar(value=1000)
         ttk.Spinbox(aa, from_=0, to=60000, increment=100,
                     textvariable=self._hd_all_var, width=6).pack(side='left', padx=4)
         ttk.Button(aa, text='Apply', command=self._apply_all_hdelays).pack(side='left')
@@ -310,7 +317,7 @@ class App(tk.Tk):
         aa = ttk.Frame(lf)
         aa.pack(fill='x', pady=(0, 4))
         ttk.Label(aa, text='All V-paths:').pack(side='left')
-        self._vd_all_var = tk.IntVar(value=2000)
+        self._vd_all_var = tk.IntVar(value=1000)
         ttk.Spinbox(aa, from_=0, to=60000, increment=100,
                     textvariable=self._vd_all_var, width=6).pack(side='left', padx=4)
         ttk.Button(aa, text='Apply', command=self._apply_all_vdelays).pack(side='left')
@@ -358,8 +365,17 @@ class App(tk.Tk):
     # ── display config ────────────────────────────────────────────────────────
 
     def _build_display(self, parent):
-        lf = ttk.LabelFrame(parent, text='Display', padding=6)
-        lf.pack(fill='x', pady=(0, 6))
+        lf = ttk.LabelFrame(parent, text='Live Viewer Settings', padding=6)
+        lf.pack(fill='x', pady=(6, 0))
+
+        tr = ttk.Frame(lf)
+        tr.pack(fill='x', pady=(0, 6))
+        ttk.Checkbutton(tr, text='Show values',
+                        variable=self._show_values_var).pack(side='left', padx=(0, 12))
+        ttk.Checkbutton(tr, text='Show colors',
+                        variable=self._show_colors_var).pack(side='left', padx=(0, 12))
+        ttk.Checkbutton(tr, text='Show grid',
+                        variable=self._show_grid_var).pack(side='left')
 
         vr = ttk.Frame(lf)
         vr.pack(fill='x', pady=(0, 6))
@@ -373,7 +389,7 @@ class App(tk.Tk):
                     textvariable=self._v_max_var, width=7).pack(side='left', padx=3)
 
         cr = ttk.Frame(lf)
-        cr.pack(fill='x')
+        cr.pack(fill='x', pady=(0, 6))
         self._lo_swatch = tk.Label(cr, bg=self._color_lo, width=3, relief='solid')
         self._lo_swatch.pack(side='left', padx=(0, 4))
         ttk.Button(cr, text='Low color',
@@ -382,6 +398,19 @@ class App(tk.Tk):
         self._hi_swatch.pack(side='left', padx=(0, 4))
         ttk.Button(cr, text='High color',
                    command=self._pick_hi_color).pack(side='left')
+
+        vcr = ttk.Frame(lf)
+        vcr.pack(fill='x')
+        self._value_color_swatch = tk.Label(vcr, bg=self._value_color, width=3, relief='solid')
+        self._value_color_swatch.pack(side='left', padx=(0, 4))
+        ttk.Button(vcr, text='Value text color',
+                   command=self._pick_value_color).pack(side='left')
+
+    def _pick_value_color(self):
+        result = colorchooser.askcolor(color=self._value_color, title='Value text colour')
+        if result[1]:
+            self._value_color = result[1]
+            self._value_color_swatch.configure(bg=self._value_color)
 
     def _pick_lo_color(self):
         result = colorchooser.askcolor(color=self._color_lo, title='Low voltage colour')
@@ -414,14 +443,27 @@ class App(tk.Tk):
         if hasattr(self, '_vpath_frame'):
             self._rebuild_vpath_grid()
 
+    def _fit_left_panel(self):
+        self.update_idletasks()
+        w = self._left.winfo_reqwidth() + 16  # +16 for vertical scrollbar
+        self._lcv.configure(width=w)
+        self._paned.sashpos(0, w)
+        self.after(50, self._fit_window)
+
+    def _fit_window(self):
+        self.update_idletasks()
+        lw = self._lcv.winfo_width()
+        rw = self._right_frame.winfo_reqwidth()
+        self.geometry(f'{lw + rw}x{self.winfo_reqheight()}')
+
     # ── right panel (heatmap) ─────────────────────────────────────────────────
 
     def _build_right(self):
-        right = ttk.Frame(self, padding=(4, 8, 8, 8))
-        right.grid(row=0, column=1, sticky='nsew')
-        self.grid_columnconfigure(1, weight=1)
+        right = ttk.Frame(self._paned, padding=(4, 8, 8, 8))
+        self._paned.add(right, weight=1)
+        self._right_frame = right
 
-        lf = ttk.LabelFrame(right, text='Live Voltages', padding=6)
+        lf = ttk.LabelFrame(right, text='Live ICC Activity Viewer', padding=6)
         lf.pack(fill='both', expand=True)
 
         cw = LABEL_PX + MAX_COLS * CELL_PX
@@ -429,6 +471,7 @@ class App(tk.Tk):
         self._canvas = tk.Canvas(lf, bg='#121212', highlightthickness=0,
                                   width=cw, height=ch)
         self._canvas.pack()
+        self._build_display(lf)
 
         self._cells = {}
         self._ctexts = {}
@@ -448,7 +491,7 @@ class App(tk.Tk):
                 y0 = LABEL_PX + r * CELL_PX
                 rid = self._canvas.create_rectangle(
                     x0, y0, x0 + CELL_PX, y0 + CELL_PX,
-                    fill='#1a1a1a', outline='#2a2a2a')
+                    fill='#1a1a1a', outline='')
                 tid = self._canvas.create_text(
                     x0 + CELL_PX // 2, y0 + CELL_PX // 2,
                     text='', fill='#444', font=('Consolas', 8))
@@ -615,6 +658,9 @@ class App(tk.Tk):
                 self.after(0, self._on_voltages, rows, cols, voltages)
 
     def _on_voltages(self, rows, cols, voltages):
+        show_v = self._show_values_var.get()
+        show_c = self._show_colors_var.get()
+        grid_outline = '#444444' if self._show_grid_var.get() else ''
         for r in range(MAX_ROWS):
             for c in range(MAX_COLS):
                 rid = self._cells[(r, c)]
@@ -622,13 +668,14 @@ class App(tk.Tk):
                 if r < rows and c < cols:
                     v = voltages[r * cols + c]
                     is_wait = (v == 0.0)
-                    self._canvas.itemconfig(rid, fill=self._v_to_color(v))
+                    fill = self._v_to_color(v) if show_c else ('#1a2e4a' if is_wait else '#3a3a3a')
+                    self._canvas.itemconfig(rid, fill=fill, outline=grid_outline)
                     self._canvas.itemconfig(
                         tid,
-                        text='WAIT' if is_wait else f'{v:.1f}',
-                        fill='#4a8ab5' if is_wait else 'white')
+                        text=('WAIT' if is_wait else f'{v:.1f}') if show_v else '',
+                        fill='#4a8ab5' if is_wait else self._value_color)
                 else:
-                    self._canvas.itemconfig(rid, fill='#1a1a1a')
+                    self._canvas.itemconfig(rid, fill='#1a1a1a', outline='')
                     self._canvas.itemconfig(tid, text='')
 
     def on_close(self):
