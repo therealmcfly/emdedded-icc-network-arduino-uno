@@ -38,7 +38,7 @@ The executable is output to `dist/controller.exe`. It requires no Python install
 
 ### Theme
 
-A **Theme** dropdown at the top of the left panel switches between **Dark** and **Light** colour schemes. All panels, the live viewer, and the colour swatches update immediately.
+A **Theme** dropdown at the top of the left panel switches between **Light** and **Dark** colour schemes. The controller starts in **Light** mode, and all panels, the live viewer, and the colour swatches update immediately.
 
 ---
 
@@ -101,6 +101,7 @@ Real-time heatmap of cell voltages. The canvas resizes automatically when the gr
 - Blocked cells (`-1`) show the **Blocked cell color**.
 - Cells outside the configured grid show the **inactive** colour or are hidden.
 - Click any active grid block to open the **ICC Voltage Signals** window and add that cell's live voltage trace.
+- Click **Enter Stimulation Mode** to keep the Live Viewer in stimulation mode; each block click sends that ICC row/column to the board until **Exit Stimulation Mode** is clicked.
 - Click additional blocks to append separate real-time charts below the existing traces.
 - Use **Width (s)** in the signal window to choose how much recent signal history is visible in each moving chart.
 - Use the **History** slider to freeze all charts on a past sample window, then click **Follow live** to return to the advancing live 4/5-position view.
@@ -153,6 +154,18 @@ Sent every timestep while running.
 | rows × cols × 4 | cell voltages (float32 LE, row-major) |
 
 A cell voltage of exactly `0.0` indicates the WAIT state.
+
+### External stimulus packet (PC → board)
+
+Sent by clicking a Live Viewer cell while the controller is in **Stimulation** mode.
+
+| Bytes   | Field                         |
+| ------- | ----------------------------- |
+| `AA 55` | Sync header                   |
+| 1       | row (int8)                    |
+| 1       | col (int8)                    |
+
+After each telemetry packet, the board checks for this packet and sets the matching ICC relay to `1`.
 
 ---
 

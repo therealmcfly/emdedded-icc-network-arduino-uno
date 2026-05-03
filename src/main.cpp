@@ -215,6 +215,69 @@ static void send_telemetry_packet()
 	}
 }
 
+static void apply_ext_stimulus(int8_t row, int8_t col)
+{
+	if (row < 0 || col < 0)
+	{
+		return;
+	}
+	if ((uint8_t)row >= v_count || (uint8_t)col >= h_count)
+	{
+		return;
+	}
+	iccs[(uint8_t)row][(uint8_t)col].relay = 1;
+}
+
+static void check_ext_stimuli()
+{
+	static uint8_t match_index = 0U;
+	static bool waiting_payload = false;
+
+	if (waiting_payload)
+	{
+		if (Serial.available() < 2)
+		{
+			return;
+		}
+		int8_t row = (int8_t)Serial.read();
+		int8_t col = (int8_t)Serial.read();
+		waiting_payload = false;
+		match_index = 0U;
+		apply_ext_stimulus(row, col);
+	}
+
+	while (Serial.available() > 0)
+	{
+		int incoming = Serial.read();
+		if (incoming < 0)
+		{
+			continue;
+		}
+
+		uint8_t byte = (uint8_t)incoming;
+		if (byte == kPacketHeader[match_index])
+		{
+			match_index++;
+			if (match_index == sizeof(kPacketHeader))
+			{
+				if (Serial.available() < 2)
+				{
+					waiting_payload = true;
+					return;
+				}
+				int8_t row = (int8_t)Serial.read();
+				int8_t col = (int8_t)Serial.read();
+				match_index = 0U;
+				apply_ext_stimulus(row, col);
+			}
+		}
+		else
+		{
+			match_index = (byte == kPacketHeader[0]) ? 1U : 0U;
+		}
+	}
+}
+
 static bool wait_for_init_packet()
 {
 	static const uint8_t kInitHeader[4] = {'I', 'C', 'C', 'F'};
@@ -361,5 +424,6 @@ void loop()
 	step_icc_network_1d(&time_step_ms);
 	// print_telemetry();
 	send_telemetry_packet();
+	check_ext_stimuli();
 	next_step_ms += time_step_ms;
 }

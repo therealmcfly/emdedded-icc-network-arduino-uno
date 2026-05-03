@@ -14,6 +14,7 @@ V_MIN = -67.6339
 V_MAX = -24.1091
 BAUD = 115200
 INIT_HEADER = b'ICCF'
+STIM_HEADER = b'\xAA\x55'
 INTERVALS = ('-1', '0', '15', '20', '23', '26', '30', '40')
 MAX_ROWS = 10
 MAX_COLS = 10
@@ -530,8 +531,8 @@ class App(tk.Tk):
         self.title('ICC Board Controller')
         self.resizable(True, True)
 
-        self._theme_var = tk.StringVar(value='Dark')
-        self._theme = THEMES['Dark']
+        self._theme_var = tk.StringVar(value='Light')
+        self._theme = THEMES['Light']
         self.configure(bg=self._theme['bg'])
 
         self._ser = None
@@ -555,6 +556,8 @@ class App(tk.Tk):
         self._cell_bg_color = '#ffffff'
         self._blocked_color = '#555555'
         self._trace_window = None
+        self._stim_mode = False
+        self._stim_disabled_widgets = []
 
         self._paned = ttk.PanedWindow(self, orient='horizontal')
         self._paned.pack(fill='both', expand=True)
@@ -1022,8 +1025,15 @@ class App(tk.Tk):
         self._paned.add(right, weight=1)
         self._right_frame = right
 
-        lf = ttk.LabelFrame(right, text='Live ICC Activity Viewer', padding=6)
+        lf = ttk.LabelFrame(right, padding=6)
         lf.pack(fill='both', expand=True)
+
+        header = ttk.Frame(lf)
+        header.pack(fill='x', pady=(0, 6))
+        ttk.Label(header, text='Live ICC Activity Viewer').pack(side='left')
+        self._stim_btn = ttk.Button(header, text='Enter Stimulation Mode',
+                                    command=self._toggle_stimulation_mode)
+        self._stim_btn.pack(side='right')
 
         cw = LABEL_PX + MAX_COLS * CELL_PX
         ch = LABEL_PX + MAX_ROWS * CELL_PX
@@ -1064,10 +1074,10 @@ class App(tk.Tk):
                 self._ctexts[(r, c)] = tid
                 self._canvas.tag_bind(
                     rid, '<Button-1>',
-                    lambda _e, row=r, col=c: self._open_trace_window(row, col))
+                    lambda _e, row=r, col=c: self._on_live_cell_click(row, col))
                 self._canvas.tag_bind(
                     tid, '<Button-1>',
-                    lambda _e, row=r, col=c: self._open_trace_window(row, col))
+                    lambda _e, row=r, col=c: self._on_live_cell_click(row, col))
 
         bar = ttk.Frame(right)
         bar.pack(fill='x', pady=(4, 0))
@@ -1096,6 +1106,12 @@ class App(tk.Tk):
             t = max(0.0, min(1.0, (v - v_min) / (v_max - v_min)))
         return lerp_color(self._color_lo, self._color_hi, t)
 
+    def _on_live_cell_click(self, row, col):
+        if self._stim_mode:
+            self._send_stimulation(row, col)
+        else:
+            self._open_trace_window(row, col)
+
     def _open_trace_window(self, row, col):
         try:
             rows = self._rows or max(1, min(MAX_ROWS, int(self._rows_var.get())))
@@ -1107,6 +1123,87 @@ class App(tk.Tk):
         if self._trace_window is None or not self._trace_window.winfo_exists():
             self._trace_window = IccSignalWindow(self)
         self._trace_window.add_trace(row, col)
+
+    def _toggle_stimulation_mode(self):
+        if self._stim_mode:
+            self._exit_stimulation_mode('Stimulation cancelled')
+        else:
+            self._enter_stimulation_mode()
+
+    def _enter_stimulation_mode(self):
+        if not (self._ser and self._ser.is_open and self._rows and self._cols):
+            messagebox.showerror('Stimulation unavailable',
+                                 'Connect and initialize the board first.')
+            return
+        self._stim_mode = True
+        self._set_controls_for_stimulation(False)
+        self._stim_btn.configure(text='Exit Stimulation Mode', state='normal')
+        self._status_var.set('Stimulation mode  -  click one live ICC block')
+        self.bind('<Escape>', self._cancel_stimulation_mode)
+        self.grab_set()
+
+    def _cancel_stimulation_mode(self, *_):
+        if self._stim_mode:
+            self._exit_stimulation_mode('Stimulation cancelled')
+
+    def _exit_stimulation_mode(self, status_text=None):
+        self._stim_mode = False
+        self._set_controls_for_stimulation(True)
+        self._stim_btn.configure(text='Enter Stimulation Mode', state='normal')
+        self.unbind('<Escape>')
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        if status_text:
+            self._status_var.set(status_text)
+
+    def _set_controls_for_stimulation(self, enabled):
+        if enabled:
+            for widget, state in self._stim_disabled_widgets:
+                try:
+                    widget.configure(state=state)
+                except tk.TclError:
+                    pass
+            self._stim_disabled_widgets = []
+            return
+
+        self._stim_disabled_widgets = []
+        allowed = {self._canvas, self._stim_btn}
+        for widget in self.winfo_children():
+            self._disable_descendants_for_stimulation(widget, allowed)
+
+    def _disable_descendants_for_stimulation(self, widget, allowed):
+        if widget in allowed:
+            for child in widget.winfo_children():
+                self._disable_descendants_for_stimulation(child, allowed)
+            return
+        try:
+            state = widget.cget('state')
+        except tk.TclError:
+            state = None
+        if state is not None and state != 'disabled':
+            self._stim_disabled_widgets.append((widget, state))
+            try:
+                widget.configure(state='disabled')
+            except tk.TclError:
+                pass
+        for child in widget.winfo_children():
+            self._disable_descendants_for_stimulation(child, allowed)
+
+    def _send_stimulation(self, row, col):
+        if row >= self._rows or col >= self._cols:
+            return
+        if not (self._ser and self._ser.is_open):
+            self._exit_stimulation_mode('Stimulation failed  -  disconnected')
+            return
+        try:
+            packet = STIM_HEADER + struct.pack('<bb', row, col)
+            self._ser.write(packet)
+        except (serial.SerialException, OSError) as exc:
+            self._exit_stimulation_mode(f'Stimulation failed: {exc}')
+            return
+        self._status_var.set(f'Stimulated ICC r{row} c{col}  -  stimulation mode active')
 
     # ── serial ────────────────────────────────────────────────────────────────
 
@@ -1154,6 +1251,8 @@ class App(tk.Tk):
             self._status_var.set('Ready  —  click Initialize Board to start')
 
     def _do_disconnect(self):
+        if self._stim_mode:
+            self._exit_stimulation_mode()
         self._alive = False
         if self._ser:
             self._ser.close()
