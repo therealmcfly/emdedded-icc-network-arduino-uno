@@ -100,6 +100,13 @@ Real-time heatmap of cell voltages. The canvas resizes automatically when the gr
 - Active cells are coloured by voltage (Low → High colour gradient).
 - Blocked cells (`-1`) show the **Blocked cell color**.
 - Cells outside the configured grid show the **inactive** colour or are hidden.
+- Click any active grid block to open the **ICC Voltage Signals** window and add that cell's live voltage trace.
+- Click additional blocks to append separate real-time charts below the existing traces.
+- Use **Width (s)** in the signal window to choose how much recent signal history is visible in each moving chart.
+- Use the **History** slider to freeze all charts on a past sample window, then click **Follow live** to return to the advancing live 4/5-position view.
+- Deactivated ICC traces are labelled **DEACTIVATED** in red in the signal window.
+- Second markers are drawn below each chart and automatically space themselves for the selected signal width.
+- In the signal window, click a chart to select it, then use **Remove selected** to remove that ICC trace.
 
 ---
 

@@ -19,6 +19,10 @@ MAX_ROWS = 10
 MAX_COLS = 10
 CELL_PX = 56
 LABEL_PX = 22
+TRACE_MAX_POINTS = 4000
+TRACE_CHART_W = 560
+TRACE_CHART_H = 150
+TRACE_DEFAULT_SECONDS = 20.0
 
 THEMES = {
     'Dark': {
@@ -101,6 +105,425 @@ def lerp_color(c1, c2, t):
         int(b1 + (b2 - b1) * t))
 
 
+class IccSignalWindow(tk.Toplevel):
+    def __init__(self, app):
+        super().__init__(app)
+        self._app = app
+        self._theme = app._theme
+        self._charts = {}
+        self._selected = None
+        self._closed = False
+        self._window_seconds_var = tk.DoubleVar(value=TRACE_DEFAULT_SECONDS)
+        self._view_offset_seconds_var = tk.DoubleVar(value=0.0)
+        self._history_max_seconds = 0.0
+        self._follow_live = True
+        self._history_anchor_index = None
+        self._setting_history_scroll = False
+
+        self.title('ICC Voltage Signals')
+        self.configure(bg=self._theme['bg'])
+        self.resizable(True, True)
+        self.protocol('WM_DELETE_WINDOW', self._on_close)
+
+        top = ttk.Frame(self, padding=(8, 8, 8, 4))
+        top.pack(fill='x')
+        self._title_var = tk.StringVar(value='Click ICC blocks to add live voltage traces')
+        self._title_lbl = ttk.Label(top, textvariable=self._title_var)
+        self._title_lbl.pack(side='left')
+        ttk.Label(top, text='Width (s)').pack(side='left', padx=(16, 4))
+        self._window_spin = ttk.Spinbox(
+            top, from_=1.0, to=120.0, increment=1.0, format='%.0f',
+            textvariable=self._window_seconds_var, width=5,
+            command=self._redraw_all_charts)
+        self._window_spin.pack(side='left')
+        self._window_seconds_var.trace_add('write',
+                                           lambda *_: self._on_window_seconds_changed())
+        self._follow_btn = ttk.Button(top, text='Follow live',
+                                      command=self._follow_latest)
+        self._follow_btn.pack(side='left', padx=(8, 0))
+        self._remove_btn = ttk.Button(top, text='Remove selected',
+                                      command=self.remove_selected,
+                                      state='disabled')
+        self._remove_btn.pack(side='right')
+
+        history = ttk.Frame(self, padding=(8, 0, 8, 4))
+        history.pack(fill='x')
+        ttk.Label(history, text='History').pack(side='left', padx=(0, 6))
+        self._history_scale = ttk.Scale(
+            history, from_=0.0, to=0.0, orient='horizontal',
+            variable=self._view_offset_seconds_var,
+            command=self._on_history_scroll)
+        self._history_scale.pack(side='left', fill='x', expand=True)
+        self._history_lbl = ttk.Label(history, text='live', width=12, anchor='e')
+        self._history_lbl.pack(side='left', padx=(6, 0))
+
+        self._scroll_canvas = tk.Canvas(self, bg=self._theme['bg'],
+                                        highlightthickness=0)
+        self._scrollbar = ttk.Scrollbar(self, orient='vertical',
+                                        command=self._scroll_canvas.yview)
+        self._body = ttk.Frame(self._scroll_canvas, padding=(8, 4, 8, 8))
+        self._body_win = self._scroll_canvas.create_window(
+            (0, 0), window=self._body, anchor='nw')
+        self._scroll_canvas.configure(yscrollcommand=self._scrollbar.set)
+        self._scroll_canvas.pack(side='left', fill='both', expand=True)
+        self._scrollbar.pack(side='right', fill='y')
+
+        self._body.bind('<Configure>', lambda _e: self._sync_scroll_region())
+        self._body.bind('<MouseWheel>', self._on_mousewheel)
+        self._scroll_canvas.bind('<MouseWheel>', self._on_mousewheel)
+        self._scroll_canvas.bind(
+            '<Configure>',
+            lambda e: self._scroll_canvas.itemconfig(self._body_win,
+                                                     width=e.width))
+        self.apply_theme(self._theme)
+
+    def _on_close(self):
+        self._closed = True
+        self._app._trace_window = None
+        self.destroy()
+
+    def _on_mousewheel(self, event):
+        if self.winfo_exists():
+            self._scroll_canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
+
+    def _sync_scroll_region(self):
+        self._scroll_canvas.configure(scrollregion=self._scroll_canvas.bbox('all'))
+        self.after_idle(self._fit_to_charts)
+
+    def _fit_to_charts(self):
+        if self._closed:
+            return
+        self.update_idletasks()
+        req_w = max(620, self._body.winfo_reqwidth() + 32)
+        req_h = self._title_lbl.winfo_reqheight() + self._body.winfo_reqheight() + 34
+        max_h = max(240, self.winfo_screenheight() - 120)
+        self.geometry(f'{req_w}x{min(req_h, max_h)}')
+
+    def apply_theme(self, theme):
+        self._theme = theme
+        self.configure(bg=theme['bg'])
+        self._scroll_canvas.configure(bg=theme['bg'])
+        for key in self._charts:
+            self._style_chart(key)
+            self._draw_chart(key)
+
+    def add_trace(self, row, col):
+        key = (row, col)
+        if key in self._charts:
+            self.select_trace(key)
+            self.lift()
+            return
+
+        frame = tk.Frame(self._body, bg=self._theme['bg'],
+                         highlightthickness=1, bd=0)
+        frame.pack(fill='x', pady=(0, 8))
+        header = tk.Frame(frame, bg=self._theme['bg'])
+        header.pack(fill='x', padx=6, pady=(5, 2))
+        title = tk.Label(header, text='', anchor='w',
+                         bg=self._theme['bg'], fg=self._theme['fg'])
+        title.pack(side='left')
+        current = tk.Label(header, text='--.- mV', anchor='e',
+                           bg=self._theme['bg'], fg=self._theme['pkt_fg'],
+                           font=('Consolas', 10))
+        current.pack(side='right')
+        canvas = tk.Canvas(frame, width=TRACE_CHART_W, height=TRACE_CHART_H,
+                           bg=self._theme['canvas_bg'], highlightthickness=0)
+        canvas.pack(fill='x', padx=6, pady=(0, 6))
+
+        chart = {
+            'frame': frame,
+            'header': header,
+            'title': title,
+            'current': current,
+            'canvas': canvas,
+            'values': [],
+        }
+        self._charts[key] = chart
+        self._update_chart_title(key)
+        for widget in (frame, header, title, current, canvas):
+            widget.bind('<Button-1>', lambda _e, k=key: self.select_trace(k))
+            widget.bind('<MouseWheel>', self._on_mousewheel)
+        canvas.bind('<Configure>', lambda _e, k=key: self._draw_chart(k))
+        self.select_trace(key)
+        self._update_empty_state()
+        self._draw_chart(key)
+        self.lift()
+        self.after_idle(self._fit_to_charts)
+
+    def select_trace(self, key):
+        if key not in self._charts:
+            return
+        self._selected = key
+        self._remove_btn.configure(state='normal')
+        for chart_key in self._charts:
+            self._style_chart(chart_key)
+
+    def remove_selected(self):
+        if self._selected is None:
+            return
+        chart = self._charts.pop(self._selected, None)
+        if chart:
+            chart['frame'].destroy()
+        self._selected = next(iter(self._charts), None)
+        self._remove_btn.configure(state='normal' if self._selected else 'disabled')
+        for key in self._charts:
+            self._style_chart(key)
+        self._update_empty_state()
+        self.after_idle(self._fit_to_charts)
+
+    def add_samples(self, rows, cols, voltages):
+        changed_keys = []
+        for key, chart in self._charts.items():
+            row, col = key
+            if row >= rows or col >= cols:
+                continue
+            value = voltages[row * cols + col]
+            chart['values'].append(value)
+            if len(chart['values']) > TRACE_MAX_POINTS:
+                del chart['values'][:-TRACE_MAX_POINTS]
+            chart['current'].configure(
+                text='WAIT' if value == 0.0 else f'{value:.2f} mV')
+            self._update_chart_title(key)
+            changed_keys.append(key)
+        self._update_history_scroll()
+        for key in changed_keys:
+            self._draw_chart(key)
+
+    def _on_window_seconds_changed(self):
+        self._update_history_scroll()
+        self._redraw_all_charts()
+
+    def _on_history_scroll(self, value):
+        if self._setting_history_scroll:
+            return
+        try:
+            offset = max(0.0, float(value))
+        except ValueError:
+            offset = 0.0
+        self._follow_live = offset <= 0.01
+        if self._follow_live:
+            self._history_anchor_index = None
+            self._set_history_offset(0.0)
+        else:
+            latest_index = self._latest_sample_index()
+            offset_samples = int(round(offset / self._step_seconds()))
+            self._history_anchor_index = max(0, latest_index - offset_samples)
+            self._set_history_offset(self._offset_for_anchor())
+        self._update_history_label()
+        self._redraw_all_charts()
+
+    def _follow_latest(self):
+        self._follow_live = True
+        self._history_anchor_index = None
+        self._set_history_offset(0.0)
+        self._update_history_label()
+        self._redraw_all_charts()
+
+    def _update_history_scroll(self):
+        self._history_max_seconds = self._max_history_offset_seconds()
+        self._history_scale.configure(to=self._history_max_seconds)
+        if self._follow_live:
+            self._history_anchor_index = None
+            self._set_history_offset(0.0)
+        else:
+            self._set_history_offset(min(self._offset_for_anchor(),
+                                         self._history_max_seconds))
+        self._update_history_label()
+
+    def _update_history_label(self):
+        offset = self._view_offset_seconds_var.get()
+        if offset <= 0.01:
+            self._history_lbl.configure(text='live')
+        else:
+            self._history_lbl.configure(text=f'-{offset:.1f}s')
+
+    def _redraw_all_charts(self):
+        for key in self._charts:
+            self._draw_chart(key)
+
+    def _window_seconds(self):
+        try:
+            return max(1.0, float(self._window_seconds_var.get()))
+        except (tk.TclError, ValueError):
+            return TRACE_DEFAULT_SECONDS
+
+    def _step_seconds(self):
+        try:
+            return max(0.001, int(self._app._step_var.get()) / 1000.0)
+        except (tk.TclError, ValueError):
+            return 0.2
+
+    def _latest_sample_index(self):
+        if not self._charts:
+            return 0
+        return max(0, max(len(chart['values']) for chart in self._charts.values()) - 1)
+
+    def _offset_for_anchor(self):
+        if self._history_anchor_index is None:
+            return 0.0
+        return max(0.0, (self._latest_sample_index() - self._history_anchor_index) *
+                   self._step_seconds())
+
+    def _set_history_offset(self, offset):
+        self._setting_history_scroll = True
+        self._view_offset_seconds_var.set(max(0.0, offset))
+        self._setting_history_scroll = False
+
+    def _visible_sample_count(self):
+        return max(2, int(self._window_seconds() / self._step_seconds()) + 1)
+
+    def _max_history_offset_seconds(self):
+        if not self._charts:
+            return 0.0
+        longest = max(len(chart['values']) for chart in self._charts.values())
+        history_seconds = max(0.0, (longest - 1) * self._step_seconds())
+        return max(0.0, history_seconds - self._window_seconds())
+
+    def _tick_step_seconds(self, width_seconds, pixel_width):
+        target_ticks = max(2, int(pixel_width / 78))
+        raw = max(0.1, width_seconds / target_ticks)
+        for base in (0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60):
+            if raw <= base:
+                return base
+        return 120
+
+    def _format_seconds_label(self, seconds):
+        if abs(seconds) < 0.05:
+            return '0s'
+        if abs(seconds) < 10:
+            return f'{seconds:.1f}s'
+        return f'{seconds:.0f}s'
+
+    def _draw_time_ticks(self, canvas, x0, x1, y0, y1, live, now_x, start_s, end_s):
+        t = self._theme
+        if live:
+            tick_start, tick_end = -self._window_seconds(), 0.0
+            tick_left, tick_right = x0, now_x
+        else:
+            tick_start, tick_end = start_s, end_s
+            tick_left, tick_right = x0, x1
+        if tick_right <= tick_left:
+            return
+        width_seconds = max(0.1, tick_end - tick_start)
+        step = self._tick_step_seconds(width_seconds, tick_right - tick_left)
+        first = int(tick_start / step) * step
+        if first < tick_start:
+            first += step
+        tick = first
+        while tick <= tick_end + 0.0001:
+            x = tick_left + (tick - tick_start) / width_seconds * (tick_right - tick_left)
+            canvas.create_line(x, y1, x, y1 + 4, fill=t['axis_label'])
+            canvas.create_text(x, y1 + 13, text=self._format_seconds_label(tick),
+                               fill=t['axis_label'], font=('Consolas', 8))
+            tick += step
+
+    def _style_chart(self, key):
+        chart = self._charts[key]
+        selected = key == self._selected
+        border = self._theme['pkt_fg'] if selected else self._theme['border']
+        chart['frame'].configure(bg=self._theme['bg'], highlightbackground=border,
+                                 highlightcolor=border)
+        chart['header'].configure(bg=self._theme['bg'])
+        title_fg = '#d32f2f' if self._is_deactivated(key) else self._theme['fg']
+        chart['title'].configure(bg=self._theme['bg'], fg=title_fg)
+        chart['current'].configure(bg=self._theme['bg'], fg=self._theme['pkt_fg'])
+        chart['canvas'].configure(bg=self._theme['canvas_bg'])
+
+    def _is_deactivated(self, key):
+        row, col = key
+        return (row < len(self._app._iv_vars) and
+                col < len(self._app._iv_vars[row]) and
+                self._app._iv_vars[row][col].get() == '-1')
+
+    def _update_chart_title(self, key):
+        if key not in self._charts:
+            return
+        row, col = key
+        suffix = ' - DEACTIVATED' if self._is_deactivated(key) else ''
+        self._charts[key]['title'].configure(text=f'ICC r{row} c{col}{suffix}')
+        self._style_chart(key)
+
+    def _update_empty_state(self):
+        count = len(self._charts)
+        if count:
+            self._title_var.set(f'{count} live ICC signal{"s" if count != 1 else ""}')
+        else:
+            self._title_var.set('Click ICC blocks to add live voltage traces')
+
+    def _draw_chart(self, key):
+        chart = self._charts[key]
+        canvas = chart['canvas']
+        values = chart['values']
+        t = self._theme
+        canvas.delete('all')
+        w = max(1, canvas.winfo_width() or TRACE_CHART_W)
+        h = TRACE_CHART_H
+        pad_l, pad_r, pad_t, pad_b = 44, 10, 10, 24
+        x0, y0 = pad_l, pad_t
+        x1, y1 = w - pad_r, h - pad_b
+
+        canvas.create_line(x0, y0, x0, y1, fill=t['axis_label'])
+        canvas.create_line(x0, y1, x1, y1, fill=t['axis_label'])
+        try:
+            v_min = float(self._app._v_min_var.get())
+            v_max = float(self._app._v_max_var.get())
+        except (tk.TclError, ValueError):
+            v_min, v_max = V_MIN, V_MAX
+        if v_max == v_min:
+            v_min, v_max = v_min - 1.0, v_max + 1.0
+        mid = (v_min + v_max) / 2.0
+        for val in (v_max, mid, v_min):
+            y = y1 - (val - v_min) / (v_max - v_min) * (y1 - y0)
+            canvas.create_line(x0 - 3, y, x1, y, fill=t['border'])
+            canvas.create_text(x0 - 7, y, text=f'{val:.0f}', anchor='e',
+                               fill=t['axis_label'], font=('Consolas', 8))
+        now_x = x0 + (x1 - x0) * 0.8
+        offset_seconds = max(0.0, self._view_offset_seconds_var.get())
+        live = self._follow_live
+
+        if len(values) < 2:
+            canvas.create_text((x0 + x1) / 2, (y0 + y1) / 2,
+                               text='Waiting for samples',
+                               fill=t['axis_label'])
+            return
+
+        visible_samples = self._visible_sample_count()
+        points = []
+        span = max(1, visible_samples - 1)
+        step_s = self._step_seconds()
+        latest_index = len(values) - 1
+        if live:
+            end_index = latest_index
+        else:
+            anchor_index = self._history_anchor_index
+            if anchor_index is None:
+                offset_samples = int(round(offset_seconds / step_s))
+                anchor_index = self._latest_sample_index() - offset_samples
+            end_index = max(0, min(latest_index, anchor_index))
+        start_index = max(0, end_index - visible_samples + 1)
+
+        if live:
+            x_left, x_right = x0, now_x
+            canvas.create_line(now_x, y0, now_x, y1, fill=t['pkt_fg'])
+            canvas.create_text(now_x + 4, y0 + 8, text='now', anchor='w',
+                               fill=t['pkt_fg'], font=('Consolas', 8))
+        else:
+            x_left, x_right = x0, x1
+
+        for sample_index in range(start_index, end_index + 1):
+            value = values[sample_index]
+            position = sample_index - (end_index - visible_samples + 1)
+            x = x_left + position / span * (x_right - x_left)
+            clipped = max(v_min, min(v_max, value))
+            y = y1 - (clipped - v_min) / (v_max - v_min) * (y1 - y0)
+            points.extend((x, y))
+        start_s = -(offset_seconds + self._window_seconds())
+        end_s = -offset_seconds
+        self._draw_time_ticks(canvas, x0, x1, y0, y1, live, now_x, start_s, end_s)
+        if len(points) >= 4:
+            canvas.create_line(*points, fill=t['pkt_fg'], width=2, smooth=True)
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -131,6 +554,7 @@ class App(tk.Tk):
         self._value_color = '#000000'
         self._cell_bg_color = '#ffffff'
         self._blocked_color = '#555555'
+        self._trace_window = None
 
         self._paned = ttk.PanedWindow(self, orient='horizontal')
         self._paned.pack(fill='both', expand=True)
@@ -191,6 +615,8 @@ class App(tk.Tk):
         if hasattr(self, '_status_lbl'):
             self._status_lbl.configure(foreground=t['status_fg'])
             self._pkt_lbl.configure(foreground=t['pkt_fg'])
+        if self._trace_window and self._trace_window.winfo_exists():
+            self._trace_window.apply_theme(t)
 
     # ── left panel (scrollable) ───────────────────────────────────────────────
 
@@ -636,6 +1062,12 @@ class App(tk.Tk):
                     text='', fill=self._theme['axis_label'], font=('Consolas', 8))
                 self._cells[(r, c)] = rid
                 self._ctexts[(r, c)] = tid
+                self._canvas.tag_bind(
+                    rid, '<Button-1>',
+                    lambda _e, row=r, col=c: self._open_trace_window(row, col))
+                self._canvas.tag_bind(
+                    tid, '<Button-1>',
+                    lambda _e, row=r, col=c: self._open_trace_window(row, col))
 
         bar = ttk.Frame(right)
         bar.pack(fill='x', pady=(4, 0))
@@ -663,6 +1095,18 @@ class App(tk.Tk):
         else:
             t = max(0.0, min(1.0, (v - v_min) / (v_max - v_min)))
         return lerp_color(self._color_lo, self._color_hi, t)
+
+    def _open_trace_window(self, row, col):
+        try:
+            rows = self._rows or max(1, min(MAX_ROWS, int(self._rows_var.get())))
+            cols = self._cols or max(1, min(MAX_COLS, int(self._cols_var.get())))
+        except (tk.TclError, ValueError):
+            return
+        if row >= rows or col >= cols:
+            return
+        if self._trace_window is None or not self._trace_window.winfo_exists():
+            self._trace_window = IccSignalWindow(self)
+        self._trace_window.add_trace(row, col)
 
     # ── serial ────────────────────────────────────────────────────────────────
 
@@ -802,6 +1246,8 @@ class App(tk.Tk):
                 self.after(0, self._on_voltages, rows, cols, voltages)
 
     def _on_voltages(self, rows, cols, voltages):
+        if self._trace_window and self._trace_window.winfo_exists():
+            self._trace_window.add_samples(rows, cols, voltages)
         show_v = self._show_values_var.get()
         show_c = self._show_colors_var.get()
         show_inactive = self._show_inactive_var.get()
