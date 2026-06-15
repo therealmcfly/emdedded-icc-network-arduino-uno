@@ -115,6 +115,8 @@ Each ICC cell cycles through five states:
 | (rows−1) × cols × 2 | V-path delays (uint16 LE each), omitted if rows = 1 |
 | rows × (cols−1) | H-path gaps in mm (uint8 each), omitted if cols = 1 |
 | (rows−1) × cols | V-path gaps in mm (uint8 each), omitted if rows = 1 |
+| 1 | electrode count (uint8) |
+| electrode count × 3 | electrode row, column, and height in mm (uint8 each) |
 
 ### Telemetry packet (board → PC)
 
@@ -124,6 +126,7 @@ Sent every timestep while running.
 |---|---|
 | `AA 55` | Sync header |
 | rows × cols × 4 | cell voltages (float32 LE, row-major) |
+| electrode count × 4 | EGM potentials (float32 LE, initialization order) |
 
 A cell voltage of exactly `0.0` indicates the WAIT state.
 

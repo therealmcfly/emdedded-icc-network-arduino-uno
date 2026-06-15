@@ -75,12 +75,13 @@ THEMES = {
 
 def build_init_packet(
         rows, cols, step_ms, intervals,
-        h_delays, v_delays, h_gaps, v_gaps):
+        h_delays, v_delays, h_gaps, v_gaps, electrodes):
     """Pack the ICCF init packet.
     h_delays: list[rows][cols-1] of ms values (ignored when cols==1)
     v_delays: list[rows-1][cols] of ms values (ignored when rows==1)
     h_gaps: list[rows][cols-1] of mm values (ignored when cols==1)
     v_gaps: list[rows-1][cols] of mm values (ignored when rows==1)
+    electrodes: list of (row, col, height_mm)
     """
     buf = bytearray(INIT_HEADER)
     buf.append(rows)
@@ -105,6 +106,9 @@ def build_init_packet(
         for r in range(rows - 1):
             for c in range(cols):
                 buf += struct.pack('<B', v_gaps[r][c])
+    buf += struct.pack('<B', len(electrodes))
+    for row, col, height_mm in electrodes:
+        buf += struct.pack('<BBB', row, col, height_mm)
     return bytes(buf)
 
 
@@ -477,11 +481,7 @@ class IccSignalWindow(tk.Toplevel):
 
         canvas.create_line(x0, y0, x0, y1, fill=t['axis_label'])
         canvas.create_line(x0, y1, x1, y1, fill=t['axis_label'])
-        try:
-            v_min = float(self._app._v_min_var.get())
-            v_max = float(self._app._v_max_var.get())
-        except (tk.TclError, ValueError):
-            v_min, v_max = V_MIN, V_MAX
+        v_min, v_max = self._value_range()
         if v_max == v_min:
             v_min, v_max = v_min - 1.0, v_max + 1.0
         mid = (v_min + v_max) / 2.0
@@ -536,6 +536,86 @@ class IccSignalWindow(tk.Toplevel):
         if len(points) >= 4:
             canvas.create_line(*points, fill=t['pkt_fg'], width=2, smooth=True)
 
+    def _value_range(self):
+        try:
+            return (float(self._app._v_min_var.get()),
+                    float(self._app._v_max_var.get()))
+        except (tk.TclError, ValueError):
+            return V_MIN, V_MAX
+
+
+class EgmSignalWindow(IccSignalWindow):
+    def __init__(self, app):
+        super().__init__(app)
+        self.title('EGM Signals')
+        self._title_var.set('Set electrodes on ICC blocks to add EGM traces')
+        self.update_edit_state()
+
+    def _on_close(self):
+        self._closed = True
+        self._app._egm_window = None
+        self.destroy()
+
+    def _is_deactivated(self, key):
+        return False
+
+    def _update_chart_title(self, key):
+        if key not in self._charts:
+            return
+        row, col = key
+        height = self._app._electrodes.get(key, 0)
+        self._charts[key]['title'].configure(
+            text=f'Electrode r{row} c{col}, height {height} mm')
+        self._style_chart(key)
+
+    def _update_empty_state(self):
+        count = len(self._charts)
+        if count:
+            self._title_var.set(
+                f'{count} live EGM signal{"s" if count != 1 else ""}')
+        else:
+            self._title_var.set(
+                'Set electrodes on ICC blocks to add EGM traces')
+
+    def _value_range(self):
+        return -20.0, 20.0
+
+    def add_samples(self, potentials):
+        keys = list(self._app._electrodes)
+        changed_keys = []
+        for key, chart in self._charts.items():
+            if key not in self._app._electrodes:
+                continue
+            index = keys.index(key)
+            if index >= len(potentials):
+                continue
+            value = potentials[index]
+            chart['values'].append(value)
+            if len(chart['values']) > TRACE_MAX_POINTS:
+                del chart['values'][:-TRACE_MAX_POINTS]
+            chart['current'].configure(text=f'{value:.3f}')
+            self._update_chart_title(key)
+            changed_keys.append(key)
+        self._update_history_scroll()
+        for key in changed_keys:
+            self._draw_chart(key)
+
+    def remove_selected(self):
+        key = self._selected
+        if key is None or self._app._board_initialized:
+            return
+        super().remove_selected()
+        self._app._remove_electrode(key)
+        self.update_edit_state()
+
+    def update_edit_state(self):
+        enabled = not self._app._board_initialized and self._selected is not None
+        self._remove_btn.configure(state='normal' if enabled else 'disabled')
+
+    def select_trace(self, key):
+        super().select_trace(key)
+        self.update_edit_state()
+
 
 class App(tk.Tk):
     def __init__(self):
@@ -570,7 +650,11 @@ class App(tk.Tk):
         self._cell_bg_color = '#ffffff'
         self._blocked_color = '#555555'
         self._trace_window = None
+        self._egm_window = None
         self._stim_mode = False
+        self._electrode_mode = False
+        self._board_initialized = False
+        self._electrodes = {}
         self._stim_disabled_widgets = []
 
         self._paned = ttk.PanedWindow(self, orient='horizontal')
@@ -1108,6 +1192,7 @@ class App(tk.Tk):
         try:
             rows = max(1, min(MAX_ROWS, int(self._rows_var.get())))
             cols = max(1, min(MAX_COLS, int(self._cols_var.get())))
+            self._prune_electrodes(rows, cols)
             if hasattr(self, '_canvas'):
                 self._resize_canvas(rows, cols)
         except (tk.TclError, ValueError):
@@ -1135,6 +1220,23 @@ class App(tk.Tk):
             self._canvas.itemconfig(iid, state='normal' if r < rows else 'hidden')
         self.after(50, self._fit_window)
 
+    def _prune_electrodes(self, rows, cols):
+        invalid = [
+            key for key in self._electrodes
+            if key[0] >= rows or key[1] >= cols
+        ]
+        for key in invalid:
+            self._remove_electrode(key)
+            if self._egm_window and self._egm_window.winfo_exists():
+                chart = self._egm_window._charts.pop(key, None)
+                if chart:
+                    chart['frame'].destroy()
+        if self._egm_window and self._egm_window.winfo_exists():
+            self._egm_window._selected = next(
+                iter(self._egm_window._charts), None)
+            self._egm_window._update_empty_state()
+            self._egm_window.update_edit_state()
+
     def _fit_left_panel(self):
         self.update_idletasks()
         w = self._left.winfo_reqwidth() + 16  # +16 for vertical scrollbar
@@ -1161,9 +1263,25 @@ class App(tk.Tk):
         header = ttk.Frame(lf)
         header.pack(fill='x', pady=(0, 6))
         ttk.Label(header, text='Live ICC Activity Viewer').pack(side='left')
-        self._stim_btn = ttk.Button(header, text='Enter Stimulation Mode',
-                                    command=self._toggle_stimulation_mode)
-        self._stim_btn.pack(side='right')
+        mode_controls = ttk.Frame(header)
+        mode_controls.pack(side='right')
+        self._stim_btn = ttk.Button(
+            mode_controls, text='Enter Stimulation Mode',
+            command=self._toggle_stimulation_mode)
+        self._stim_btn.pack(fill='x')
+        electrode_row = ttk.Frame(mode_controls)
+        electrode_row.pack(fill='x', pady=(4, 0))
+        self._electrode_btn = ttk.Button(
+            electrode_row, text='Set Electrodes',
+            command=self._toggle_electrode_mode)
+        self._electrode_btn.pack(side='left')
+        ttk.Label(electrode_row, text='Height (mm)').pack(
+            side='left', padx=(8, 3))
+        self._electrode_height_var = tk.IntVar(value=1)
+        self._electrode_height_spin = ttk.Spinbox(
+            electrode_row, from_=0, to=255, increment=1,
+            textvariable=self._electrode_height_var, width=4)
+        self._electrode_height_spin.pack(side='left')
 
         cw = LABEL_PX + MAX_COLS * CELL_PX
         ch = LABEL_PX + MAX_ROWS * CELL_PX
@@ -1174,6 +1292,7 @@ class App(tk.Tk):
 
         self._cells = {}
         self._ctexts = {}
+        self._electrode_markers = {}
         self._col_label_ids = []
         self._row_label_ids = []
 
@@ -1202,11 +1321,20 @@ class App(tk.Tk):
                     text='', fill=self._theme['axis_label'], font=('Consolas', 8))
                 self._cells[(r, c)] = rid
                 self._ctexts[(r, c)] = tid
+                marker = self._canvas.create_oval(
+                    x0 + CELL_PX - 15, y0 + 3,
+                    x0 + CELL_PX - 3, y0 + 15,
+                    fill='#00a86b', outline='white', width=1,
+                    state='hidden')
+                self._electrode_markers[(r, c)] = marker
                 self._canvas.tag_bind(
                     rid, '<Button-1>',
                     lambda _e, row=r, col=c: self._on_live_cell_click(row, col))
                 self._canvas.tag_bind(
                     tid, '<Button-1>',
+                    lambda _e, row=r, col=c: self._on_live_cell_click(row, col))
+                self._canvas.tag_bind(
+                    marker, '<Button-1>',
                     lambda _e, row=r, col=c: self._on_live_cell_click(row, col))
 
         bar = ttk.Frame(right)
@@ -1237,10 +1365,75 @@ class App(tk.Tk):
         return lerp_color(self._color_lo, self._color_hi, t)
 
     def _on_live_cell_click(self, row, col):
-        if self._stim_mode:
+        if self._electrode_mode:
+            self._set_electrode(row, col)
+        elif self._stim_mode:
             self._send_stimulation(row, col)
         else:
             self._open_trace_window(row, col)
+
+    def _toggle_electrode_mode(self):
+        if self._electrode_mode:
+            self._exit_electrode_mode('Electrode placement complete')
+        else:
+            self._enter_electrode_mode()
+
+    def _enter_electrode_mode(self):
+        if self._board_initialized:
+            return
+        self._electrode_mode = True
+        allowed = {self._electrode_btn, self._electrode_height_spin}
+        if self._egm_window and self._egm_window.winfo_exists():
+            allowed.add(self._egm_window)
+        self._set_controls_for_stimulation(
+            False, allowed_buttons=allowed)
+        self._electrode_btn.configure(
+            text='Done Setting Electrodes', state='normal')
+        self._electrode_height_spin.configure(state='normal')
+        self._status_var.set(
+            'Electrode placement mode - click ICC blocks')
+        self.bind('<Escape>', self._cancel_electrode_mode)
+
+    def _cancel_electrode_mode(self, *_):
+        if self._electrode_mode:
+            self._exit_electrode_mode('Electrode placement cancelled')
+
+    def _exit_electrode_mode(self, status_text=None):
+        self._electrode_mode = False
+        self._set_controls_for_stimulation(True)
+        self._electrode_btn.configure(
+            text='Set Electrodes',
+            state='disabled' if self._board_initialized else 'normal')
+        self.unbind('<Escape>')
+        if status_text:
+            self._status_var.set(status_text)
+
+    def _set_electrode(self, row, col):
+        try:
+            rows = max(1, min(MAX_ROWS, int(self._rows_var.get())))
+            cols = max(1, min(MAX_COLS, int(self._cols_var.get())))
+            height_mm = max(0, min(255, int(self._electrode_height_var.get())))
+        except (tk.TclError, ValueError):
+            return
+        if row >= rows or col >= cols:
+            return
+
+        key = (row, col)
+        self._electrodes[key] = height_mm
+        self._canvas.itemconfigure(
+            self._electrode_markers[key], state='normal')
+        if self._egm_window is None or not self._egm_window.winfo_exists():
+            self._egm_window = EgmSignalWindow(self)
+        self._egm_window.add_trace(row, col)
+        self._egm_window._update_chart_title(key)
+        self._status_var.set(
+            f'Electrode set at r{row} c{col}, height {height_mm} mm')
+
+    def _remove_electrode(self, key):
+        self._electrodes.pop(key, None)
+        marker = self._electrode_markers.get(key)
+        if marker is not None:
+            self._canvas.itemconfigure(marker, state='hidden')
 
     def _open_trace_window(self, row, col):
         try:
@@ -1288,7 +1481,7 @@ class App(tk.Tk):
         if status_text:
             self._status_var.set(status_text)
 
-    def _set_controls_for_stimulation(self, enabled):
+    def _set_controls_for_stimulation(self, enabled, allowed_buttons=None):
         if enabled:
             for widget, state in self._stim_disabled_widgets:
                 try:
@@ -1299,14 +1492,13 @@ class App(tk.Tk):
             return
 
         self._stim_disabled_widgets = []
-        allowed = {self._canvas, self._stim_btn}
+        allowed = {self._canvas}
+        allowed.update(allowed_buttons or {self._stim_btn})
         for widget in self.winfo_children():
             self._disable_descendants_for_stimulation(widget, allowed)
 
     def _disable_descendants_for_stimulation(self, widget, allowed):
         if widget in allowed:
-            for child in widget.winfo_children():
-                self._disable_descendants_for_stimulation(child, allowed)
             return
         try:
             state = widget.cget('state')
@@ -1383,6 +1575,8 @@ class App(tk.Tk):
     def _do_disconnect(self):
         if self._stim_mode:
             self._exit_stimulation_mode()
+        if self._electrode_mode:
+            self._exit_electrode_mode()
         self._alive = False
         if self._ser:
             self._ser.close()
@@ -1394,6 +1588,10 @@ class App(tk.Tk):
         self._rows = 0
         self._cols = 0
         self._bytes_rx = 0
+        self._board_initialized = False
+        self._electrode_btn.configure(state='normal')
+        if self._egm_window and self._egm_window.winfo_exists():
+            self._egm_window.update_edit_state()
 
     def _send_init(self):
         if not (self._ser and self._ser.is_open):
@@ -1429,10 +1627,15 @@ class App(tk.Tk):
         v_gaps = ([[self._vgap_vars[r][c].get() for c in range(cols)]
                    for r in range(rows - 1)]
                   if rows > 1 and self._vgap_vars else [])
+        electrodes = [
+            (row, col, height)
+            for (row, col), height in self._electrodes.items()
+            if row < rows and col < cols
+        ]
 
         packet = build_init_packet(
             rows, cols, step, intervals,
-            h_delays, v_delays, h_gaps, v_gaps)
+            h_delays, v_delays, h_gaps, v_gaps, electrodes)
 
         self._rows = rows
         self._cols = cols
@@ -1440,6 +1643,10 @@ class App(tk.Tk):
         self._resize_canvas(rows, cols)
         self._ser.reset_input_buffer()
         self._ser.write(packet)
+        self._board_initialized = True
+        self._electrode_btn.configure(state='disabled')
+        if self._egm_window and self._egm_window.winfo_exists():
+            self._egm_window.update_edit_state()
         self._status_var.set(f'Running  {rows}×{cols}  step={step} ms')
 
     # ── background serial reader ──────────────────────────────────────────────
@@ -1474,19 +1681,27 @@ class App(tk.Tk):
                     buf = buf[2:]
                     break
 
-                pkt_len = 2 + rows * cols * 4
+                electrode_count = len(self._electrodes)
+                pkt_len = 2 + (rows * cols + electrode_count) * 4
                 if len(buf) < pkt_len:
                     break
 
                 payload = bytes(buf[2:pkt_len])
                 buf = buf[pkt_len:]
-                voltages = struct.unpack(f'<{rows * cols}f', payload)
+                values = struct.unpack(
+                    f'<{rows * cols + electrode_count}f', payload)
+                voltages = values[:rows * cols]
+                potentials = values[rows * cols:]
                 self._pkt_count += 1
-                self.after(0, self._on_voltages, rows, cols, voltages)
+                self.after(
+                    0, self._on_telemetry,
+                    rows, cols, voltages, potentials)
 
-    def _on_voltages(self, rows, cols, voltages):
+    def _on_telemetry(self, rows, cols, voltages, potentials):
         if self._trace_window and self._trace_window.winfo_exists():
             self._trace_window.add_samples(rows, cols, voltages)
+        if self._egm_window and self._egm_window.winfo_exists():
+            self._egm_window.add_samples(potentials)
         show_v = self._show_values_var.get()
         show_c = self._show_colors_var.get()
         show_inactive = self._show_inactive_var.get()
@@ -1557,6 +1772,11 @@ class App(tk.Tk):
             'v_delays': v_delays,
             'h_gaps': h_gaps,
             'v_gaps': v_gaps,
+            'electrodes': [
+                {'row': row, 'col': col, 'height_mm': height}
+                for (row, col), height in self._electrodes.items()
+                if row < rows and col < cols
+            ],
         }
         try:
             with open(path, 'w') as f:
@@ -1618,6 +1838,24 @@ class App(tk.Tk):
             for c, val in enumerate(row_vals):
                 if self._vgap_vars and r < len(self._vgap_vars) and c < len(self._vgap_vars[r]):
                     self._vgap_vars[r][c].set(int(val))
+
+        for marker in self._electrode_markers.values():
+            self._canvas.itemconfigure(marker, state='hidden')
+        if self._egm_window and self._egm_window.winfo_exists():
+            self._egm_window.destroy()
+            self._egm_window = None
+        self._electrodes.clear()
+        for item in data.get('electrodes', []):
+            try:
+                row = int(item['row'])
+                col = int(item['col'])
+                height = max(0, min(255, int(item['height_mm'])))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if 0 <= row < rows and 0 <= col < cols:
+                self._electrodes[(row, col)] = height
+                self._canvas.itemconfigure(
+                    self._electrode_markers[(row, col)], state='normal')
 
     def on_close(self):
         self._do_disconnect()

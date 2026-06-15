@@ -5,6 +5,7 @@
 
 #define MAX_V_ICC_COUNT 5
 #define MAX_H_ICC_COUNT 5
+#define MAX_ELECTRODE_COUNT (MAX_V_ICC_COUNT * MAX_H_ICC_COUNT)
 
 #define DEFAULT_ICC_H_COUNT 5
 #define DEFAULT_ICC_V_COUNT 5
@@ -15,8 +16,6 @@
 // #define DEFAULT_PM_SLOWWAVE_INTERVAL 20
 // #define OTHER_ICC_SLOWWAVE_INTERVAL 0
 #define DEFAULT_TIME_STEP_MS 200U
-
-#define ELECTRODE_COUNT 1
 
 static Icc iccs[MAX_V_ICC_COUNT][MAX_H_ICC_COUNT];
 static IccPath h_paths[MAX_V_ICC_COUNT][MAX_H_ICC_COUNT - 1];
@@ -42,8 +41,8 @@ uint8_t v_count = DEFAULT_ICC_V_COUNT;
 uint8_t h_count = DEFAULT_ICC_H_COUNT;
 uint32_t time_step_ms = DEFAULT_TIME_STEP_MS;
 
-static Electrode electrodes[ELECTRODE_COUNT] = {
-		{4U, 1U, 1U, 0.0f}};
+static Electrode electrodes[MAX_ELECTRODE_COUNT];
+static uint8_t electrode_count = 0U;
 
 static void init_icc_network_1d()
 {
@@ -110,7 +109,7 @@ static void step_icc_network_1d(uint32_t *dt_ms)
 	}
 
 	// Update the paths and path dipoles between ICCs
-	for (size_t e = 0; e < ELECTRODE_COUNT; e++)
+	for (size_t e = 0; e < electrode_count; e++)
 	{
 		electrode_clear(&electrodes[e]);
 	}
@@ -125,7 +124,7 @@ static void step_icc_network_1d(uint32_t *dt_ms)
 				icc_path_update(&h_paths[i][j], *dt_ms);
 				// Update the path dipole for EGM calculation
 				path_dipole_update(&h_path_dipoles[i][j]);
-				for (size_t e = 0; e < ELECTRODE_COUNT; e++)
+				for (size_t e = 0; e < electrode_count; e++)
 				{
 					electrode_add_dipole(
 							&electrodes[e],
@@ -144,7 +143,7 @@ static void step_icc_network_1d(uint32_t *dt_ms)
 				icc_path_update(&v_paths[i][j], *dt_ms);
 				// Update the path dipole for EGM calculation
 				path_dipole_update(&v_path_dipoles[i][j]);
-				for (size_t e = 0; e < ELECTRODE_COUNT; e++)
+				for (size_t e = 0; e < electrode_count; e++)
 				{
 					electrode_add_dipole(
 							&electrodes[e],
@@ -166,7 +165,7 @@ static void step_icc_network_2d(uint32_t *dt_ms)
 	}
 
 	// Update the paths and path dipoles between ICCs
-	for (size_t e = 0; e < ELECTRODE_COUNT; e++)
+	for (size_t e = 0; e < electrode_count; e++)
 	{
 		electrode_clear(&electrodes[e]);
 	}
@@ -176,7 +175,7 @@ static void step_icc_network_2d(uint32_t *dt_ms)
 		{
 			icc_path_update(&h_paths[i][j], *dt_ms);
 			path_dipole_update(&h_path_dipoles[i][j]);
-			for (size_t e = 0; e < ELECTRODE_COUNT; e++)
+			for (size_t e = 0; e < electrode_count; e++)
 			{
 				electrode_add_dipole(
 						&electrodes[e],
@@ -190,7 +189,7 @@ static void step_icc_network_2d(uint32_t *dt_ms)
 		{
 			icc_path_update(&v_paths[i][j], *dt_ms);
 			path_dipole_update(&v_path_dipoles[i][j]);
-			for (size_t e = 0; e < ELECTRODE_COUNT; e++)
+			for (size_t e = 0; e < electrode_count; e++)
 			{
 				electrode_add_dipole(
 						&electrodes[e],
@@ -275,6 +274,12 @@ static void send_telemetry_packet()
 		{
 			Serial.write((const uint8_t *)&iccs[i][j].v, sizeof(iccs[i][j].v));
 		}
+	}
+	for (size_t i = 0; i < electrode_count; i++)
+	{
+		Serial.write(
+				(const uint8_t *)&electrodes[i].potential,
+				sizeof(electrodes[i].potential));
 	}
 }
 
@@ -388,7 +393,8 @@ void setup()
 	// Packet layout after the ASCII header: rows(1), cols(1), time_step_ms(uint16 LE),
 	// then rows*cols bytes of per-cell freq, then (if cols>1) rows*(cols-1) uint16 LE
 	// horizontal delays, then (if rows>1) (rows-1)*cols uint16 LE vertical delays,
-	// followed by matching uint8 H-path and V-path gaps in millimetres.
+	// followed by matching uint8 H-path and V-path gaps in millimetres,
+	// then electrode_count and row/column/height bytes for each electrode.
 	{
 		uint8_t b = 0;
 
@@ -496,6 +502,32 @@ void setup()
 						;
 					v_path_gap_buff[i][j] = (uint8_t)Serial.read();
 				}
+			}
+		}
+
+		while (Serial.available() == 0)
+			;
+		const uint8_t requested_electrode_count = (uint8_t)Serial.read();
+		electrode_count =
+				requested_electrode_count > MAX_ELECTRODE_COUNT
+					? MAX_ELECTRODE_COUNT
+					: requested_electrode_count;
+
+		for (uint8_t i = 0; i < requested_electrode_count; i++)
+		{
+			while (Serial.available() == 0)
+				;
+			const uint8_t row = (uint8_t)Serial.read();
+			while (Serial.available() == 0)
+				;
+			const uint8_t col = (uint8_t)Serial.read();
+			while (Serial.available() == 0)
+				;
+			const uint8_t height_mm = (uint8_t)Serial.read();
+
+			if (i < electrode_count)
+			{
+				electrode_init(&electrodes[i], row, col, height_mm);
 			}
 		}
 	}

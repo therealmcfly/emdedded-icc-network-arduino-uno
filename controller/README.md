@@ -94,6 +94,10 @@ Conduction delay on each horizontal or vertical path between adjacent cells. The
 
 Physical spacing for each horizontal and vertical path. The **All H-paths / All V-paths** controls default to 6 mm and can fill all corresponding paths at once.
 
+#### Electrodes
+
+Before initialization, click **Set Electrodes**, choose the electrode height, and click ICC blocks to place electrodes. The EGM Signals window opens with one trace per electrode. Electrodes can be removed before initialization; their configuration is locked after **Initialize Board** is pressed.
+
 ---
 
 ### Live ICC Activity Viewer
@@ -149,6 +153,8 @@ Sent when **Initialize Board** is clicked.
 | (rows−1) × cols × 2 | V-path delays (uint16 LE each), omitted if rows = 1 |
 | rows × (cols−1) | H-path gaps in mm (uint8 each), omitted if cols = 1 |
 | (rows−1) × cols | V-path gaps in mm (uint8 each), omitted if rows = 1 |
+| 1 | electrode count (uint8) |
+| electrode count × 3 | electrode row, column, and height in mm (uint8 each) |
 
 ### Telemetry packet (board → PC)
 
@@ -158,6 +164,7 @@ Sent every timestep while running.
 | --------------- | ------------------------------------- |
 | `AA 55`         | Sync header                           |
 | rows × cols × 4 | cell voltages (float32 LE, row-major) |
+| electrode count × 4 | EGM potentials (float32 LE, initialization order) |
 
 A cell voltage of exactly `0.0` indicates the WAIT state.
 
