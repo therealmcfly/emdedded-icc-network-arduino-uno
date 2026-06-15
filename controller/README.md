@@ -90,6 +90,10 @@ Sets the autonomous pacemaking period for each cell. The **All cells / Apply** s
 
 Conduction delay on each horizontal or vertical path between adjacent cells. The **All H-paths / All V-paths** spinboxes with **Apply** fill all paths at once.
 
+#### Path Gaps (mm)
+
+Physical spacing for each horizontal and vertical path. The **All H-paths / All V-paths** controls default to 6 mm and can fill all corresponding paths at once.
+
 ---
 
 ### Live ICC Activity Viewer
@@ -143,6 +147,8 @@ Sent when **Initialize Board** is clicked.
 | rows × cols         | per-cell interval (int8, row-major)                 |
 | rows × (cols−1) × 2 | H-path delays (uint16 LE each), omitted if cols = 1 |
 | (rows−1) × cols × 2 | V-path delays (uint16 LE each), omitted if rows = 1 |
+| rows × (cols−1) | H-path gaps in mm (uint8 each), omitted if cols = 1 |
+| (rows−1) × cols | V-path gaps in mm (uint8 each), omitted if rows = 1 |
 
 ### Telemetry packet (board → PC)
 

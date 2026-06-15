@@ -1,6 +1,6 @@
 # embedded-icc-uno
 
-Arduino Mega 2560 implementation of the ICC (Interstitial Cells of Cajal) network model — up to a 10×10 grid of cells with configurable pacemaker intervals and conduction delays.
+Arduino Mega 2560 implementation of the ICC (Interstitial Cells of Cajal) network model — up to a 5×5 grid of cells with configurable pacemaker intervals, conduction delays, and path gaps.
 
 ---
 
@@ -95,7 +95,7 @@ Each ICC cell cycles through five states:
 ### `src/main.cpp` — Runtime
 
 - Waits for an `ICCF` init packet over serial before starting.
-- Unpacks rows, cols, timestep, per-cell intervals, and path delays from the packet.
+- Unpacks rows, cols, timestep, per-cell intervals, path delays, and path gaps from the packet.
 - Runs `step_icc_network_1d()` at the configured timestep and streams a binary telemetry packet after each step.
 
 ---
@@ -113,6 +113,8 @@ Each ICC cell cycles through five states:
 | rows × cols | per-cell interval (int8, row-major) |
 | rows × (cols−1) × 2 | H-path delays (uint16 LE each), omitted if cols = 1 |
 | (rows−1) × cols × 2 | V-path delays (uint16 LE each), omitted if rows = 1 |
+| rows × (cols−1) | H-path gaps in mm (uint8 each), omitted if cols = 1 |
+| (rows−1) × cols | V-path gaps in mm (uint8 each), omitted if rows = 1 |
 
 ### Telemetry packet (board → PC)
 
@@ -129,4 +131,4 @@ A cell voltage of exactly `0.0` indicates the WAIT state.
 
 ## Hardware
 
-Targets **Arduino Mega 2560** (ATmega2560, 8 KB SRAM). The 10×10 grid with path timing arrays fits comfortably in RAM on the Mega; the smaller Uno (2 KB SRAM) is insufficient for grids larger than approximately 3×3.
+Targets **Arduino Mega 2560** (ATmega2560, 8 KB SRAM). The compile-time network limit is 5×5 to leave working memory for path dipoles, electrodes, serial processing, and the runtime stack.

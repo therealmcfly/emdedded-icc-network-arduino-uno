@@ -16,8 +16,8 @@ BAUD = 115200
 INIT_HEADER = b'ICCF'
 STIM_HEADER = b'\xAA\x55'
 INTERVALS = ('-1', '0', '15', '20', '23', '26', '30', '40')
-MAX_ROWS = 10
-MAX_COLS = 10
+MAX_ROWS = 5
+MAX_COLS = 5
 CELL_PX = 56
 LABEL_PX = 22
 TRACE_MAX_POINTS = 4000
@@ -73,10 +73,14 @@ THEMES = {
 }
 
 
-def build_init_packet(rows, cols, step_ms, intervals, h_delays, v_delays):
+def build_init_packet(
+        rows, cols, step_ms, intervals,
+        h_delays, v_delays, h_gaps, v_gaps):
     """Pack the ICCF init packet.
     h_delays: list[rows][cols-1] of ms values (ignored when cols==1)
     v_delays: list[rows-1][cols] of ms values (ignored when rows==1)
+    h_gaps: list[rows][cols-1] of mm values (ignored when cols==1)
+    v_gaps: list[rows-1][cols] of mm values (ignored when rows==1)
     """
     buf = bytearray(INIT_HEADER)
     buf.append(rows)
@@ -93,6 +97,14 @@ def build_init_packet(rows, cols, step_ms, intervals, h_delays, v_delays):
         for r in range(rows - 1):
             for c in range(cols):
                 buf += struct.pack('<H', v_delays[r][c])
+    if cols > 1:
+        for r in range(rows):
+            for c in range(cols - 1):
+                buf += struct.pack('<B', h_gaps[r][c])
+    if rows > 1:
+        for r in range(rows - 1):
+            for c in range(cols):
+                buf += struct.pack('<B', v_gaps[r][c])
     return bytes(buf)
 
 
@@ -544,6 +556,8 @@ class App(tk.Tk):
         self._iv_vars = []       # [r][c] StringVar — slow-wave intervals
         self._hpath_vars = []    # [r][c] IntVar   — H-path delays, c in [0, cols-2]
         self._vpath_vars = []    # [r][c] IntVar   — V-path delays, r in [0, rows-2]
+        self._hgap_vars = []     # [r][c] IntVar   - H-path gaps in mm
+        self._vgap_vars = []     # [r][c] IntVar   - V-path gaps in mm
         self._color_lo = '#ffffff'
         self._color_hi = '#0000ff'
         self._rebuild_pending = None
@@ -703,6 +717,7 @@ class App(tk.Tk):
         self._build_intervals(lf)
         self._build_hpath_section(lf)
         self._build_vpath_section(lf)
+        self._build_path_gap_section(lf)
 
     # ── grid config ───────────────────────────────────────────────────────────
 
@@ -713,11 +728,11 @@ class App(tk.Tk):
         r1 = ttk.Frame(lf)
         r1.pack(fill='x', pady=(0, 4))
         ttk.Label(r1, text='Rows').pack(side='left')
-        self._rows_var = tk.IntVar(value=10)
+        self._rows_var = tk.IntVar(value=5)
         ttk.Spinbox(r1, from_=1, to=MAX_ROWS, textvariable=self._rows_var,
                     width=4).pack(side='left', padx=(3, 12))
         ttk.Label(r1, text='Cols').pack(side='left')
-        self._cols_var = tk.IntVar(value=10)
+        self._cols_var = tk.IntVar(value=5)
         ttk.Spinbox(r1, from_=1, to=MAX_COLS, textvariable=self._cols_var,
                     width=4).pack(side='left', padx=3)
 
@@ -893,6 +908,117 @@ class App(tk.Tk):
 
     # ── display config ────────────────────────────────────────────────────────
 
+    def _build_path_gap_section(self, parent):
+        lf = ttk.LabelFrame(parent, text='Path Gaps (mm)', padding=6)
+        lf.pack(fill='x', pady=(0, 6))
+
+        h_all = ttk.Frame(lf)
+        h_all.pack(fill='x', pady=(0, 4))
+        ttk.Label(h_all, text='All H-paths:').pack(side='left')
+        self._hg_all_var = tk.IntVar(value=6)
+        ttk.Spinbox(h_all, from_=0, to=255, increment=1,
+                    textvariable=self._hg_all_var, width=5).pack(side='left', padx=4)
+        ttk.Button(h_all, text='Apply',
+                   command=self._apply_all_hgaps).pack(side='left')
+
+        self._hgap_frame = ttk.Frame(lf)
+        self._hgap_frame.pack(fill='x', pady=(0, 6))
+
+        v_all = ttk.Frame(lf)
+        v_all.pack(fill='x', pady=(0, 4))
+        ttk.Label(v_all, text='All V-paths:').pack(side='left')
+        self._vg_all_var = tk.IntVar(value=6)
+        ttk.Spinbox(v_all, from_=0, to=255, increment=1,
+                    textvariable=self._vg_all_var, width=5).pack(side='left', padx=4)
+        ttk.Button(v_all, text='Apply',
+                   command=self._apply_all_vgaps).pack(side='left')
+
+        self._vgap_frame = ttk.Frame(lf)
+        self._vgap_frame.pack(fill='x')
+
+        self._rebuild_hgap_grid()
+        self._rebuild_vgap_grid()
+
+    def _rebuild_hgap_grid(self):
+        for widget in self._hgap_frame.winfo_children():
+            widget.destroy()
+        try:
+            rows = max(1, min(MAX_ROWS, int(self._rows_var.get())))
+            cols = max(1, min(MAX_COLS, int(self._cols_var.get())))
+        except (tk.TclError, ValueError):
+            return
+
+        if cols < 2:
+            ttk.Label(self._hgap_frame,
+                      text='(no H-paths with 1 column)',
+                      foreground='#555').pack(anchor='w')
+            self._hgap_vars = []
+            return
+
+        old = self._hgap_vars
+        self._hgap_vars = []
+        for r in range(rows):
+            row_vars = []
+            row_frame = ttk.Frame(self._hgap_frame)
+            row_frame.pack(anchor='w')
+            ttk.Label(row_frame, text=f'r{r}:', width=3).pack(side='left')
+            for c in range(cols - 1):
+                previous = (old[r][c].get()
+                            if r < len(old) and c < len(old[r])
+                            else self._hg_all_var.get())
+                value = tk.IntVar(value=previous)
+                ttk.Spinbox(row_frame, from_=0, to=255, increment=1,
+                            textvariable=value, width=5).pack(
+                                side='left', padx=1, pady=1)
+                row_vars.append(value)
+            self._hgap_vars.append(row_vars)
+
+    def _rebuild_vgap_grid(self):
+        for widget in self._vgap_frame.winfo_children():
+            widget.destroy()
+        try:
+            rows = max(1, min(MAX_ROWS, int(self._rows_var.get())))
+            cols = max(1, min(MAX_COLS, int(self._cols_var.get())))
+        except (tk.TclError, ValueError):
+            return
+
+        if rows < 2:
+            ttk.Label(self._vgap_frame,
+                      text='(no V-paths with 1 row)',
+                      foreground='#555').pack(anchor='w')
+            self._vgap_vars = []
+            return
+
+        old = self._vgap_vars
+        self._vgap_vars = []
+        for r in range(rows - 1):
+            row_vars = []
+            row_frame = ttk.Frame(self._vgap_frame)
+            row_frame.pack(anchor='w')
+            ttk.Label(row_frame, text=f'r{r} down:', width=8).pack(side='left')
+            for c in range(cols):
+                previous = (old[r][c].get()
+                            if r < len(old) and c < len(old[r])
+                            else self._vg_all_var.get())
+                value = tk.IntVar(value=previous)
+                ttk.Spinbox(row_frame, from_=0, to=255, increment=1,
+                            textvariable=value, width=5).pack(
+                                side='left', padx=1, pady=1)
+                row_vars.append(value)
+            self._vgap_vars.append(row_vars)
+
+    def _apply_all_hgaps(self):
+        value = self._hg_all_var.get()
+        for row in self._hgap_vars:
+            for variable in row:
+                variable.set(value)
+
+    def _apply_all_vgaps(self):
+        value = self._vg_all_var.get()
+        for row in self._vgap_vars:
+            for variable in row:
+                variable.set(value)
+
     def _build_display(self, parent):
         lf = ttk.LabelFrame(parent, text='Live Viewer Settings', padding=6)
         lf.pack(fill='x', pady=(6, 0))
@@ -994,6 +1120,10 @@ class App(tk.Tk):
             self._rebuild_hpath_grid()
         if hasattr(self, '_vpath_frame'):
             self._rebuild_vpath_grid()
+        if hasattr(self, '_hgap_frame'):
+            self._rebuild_hgap_grid()
+        if hasattr(self, '_vgap_frame'):
+            self._rebuild_vgap_grid()
 
     def _resize_canvas(self, rows, cols):
         cw = LABEL_PX + cols * CELL_PX
@@ -1292,7 +1422,17 @@ class App(tk.Tk):
                      for r in range(rows - 1)]
                     if rows > 1 and self._vpath_vars else [])
 
-        packet = build_init_packet(rows, cols, step, intervals, h_delays, v_delays)
+        h_gaps = ([[self._hgap_vars[r][c].get() for c in range(cols - 1)]
+                   for r in range(rows)]
+                  if cols > 1 and self._hgap_vars else [])
+
+        v_gaps = ([[self._vgap_vars[r][c].get() for c in range(cols)]
+                   for r in range(rows - 1)]
+                  if rows > 1 and self._vgap_vars else [])
+
+        packet = build_init_packet(
+            rows, cols, step, intervals,
+            h_delays, v_delays, h_gaps, v_gaps)
 
         self._rows = rows
         self._cols = cols
@@ -1402,6 +1542,12 @@ class App(tk.Tk):
         v_delays = ([[self._vpath_vars[r][c].get() for c in range(cols)]
                      for r in range(rows - 1)]
                     if rows > 1 and self._vpath_vars else [])
+        h_gaps = ([[self._hgap_vars[r][c].get() for c in range(cols - 1)]
+                   for r in range(rows)]
+                  if cols > 1 and self._hgap_vars else [])
+        v_gaps = ([[self._vgap_vars[r][c].get() for c in range(cols)]
+                   for r in range(rows - 1)]
+                  if rows > 1 and self._vgap_vars else [])
         data = {
             'rows': rows,
             'cols': cols,
@@ -1409,6 +1555,8 @@ class App(tk.Tk):
             'intervals': intervals,
             'h_delays': h_delays,
             'v_delays': v_delays,
+            'h_gaps': h_gaps,
+            'v_gaps': v_gaps,
         }
         try:
             with open(path, 'w') as f:
@@ -1460,6 +1608,16 @@ class App(tk.Tk):
             for c, val in enumerate(row_vals):
                 if self._vpath_vars and r < len(self._vpath_vars) and c < len(self._vpath_vars[r]):
                     self._vpath_vars[r][c].set(int(val))
+
+        for r, row_vals in enumerate(data.get('h_gaps', [])):
+            for c, val in enumerate(row_vals):
+                if self._hgap_vars and r < len(self._hgap_vars) and c < len(self._hgap_vars[r]):
+                    self._hgap_vars[r][c].set(int(val))
+
+        for r, row_vals in enumerate(data.get('v_gaps', [])):
+            for c, val in enumerate(row_vals):
+                if self._vgap_vars and r < len(self._vgap_vars) and c < len(self._vgap_vars[r]):
+                    self._vgap_vars[r][c].set(int(val))
 
     def on_close(self):
         self._do_disconnect()

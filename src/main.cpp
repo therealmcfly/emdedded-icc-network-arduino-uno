@@ -387,7 +387,8 @@ void setup()
 	// Read and unpack the init packet payload into the local buffers.
 	// Packet layout after the ASCII header: rows(1), cols(1), time_step_ms(uint16 LE),
 	// then rows*cols bytes of per-cell freq, then (if cols>1) rows*(cols-1) uint16 LE
-	// horizontal delays, then (if rows>1) (rows-1)*cols uint16 LE vertical delays.
+	// horizontal delays, then (if rows>1) (rows-1)*cols uint16 LE vertical delays,
+	// followed by matching uint8 H-path and V-path gaps in millimetres.
 	{
 		uint8_t b = 0;
 
@@ -466,6 +467,34 @@ void setup()
 						;
 					uint8_t h = (uint8_t)Serial.read();
 					v_path_delay_buff[i][j] = ((uint16_t)l | ((uint16_t)h << 8));
+				}
+			}
+		}
+
+		// read horizontal path gaps (uint8 mm) if present
+		if (h_count > 1)
+		{
+			for (int i = 0; i < v_count; i++)
+			{
+				for (int j = 0; j < h_count - 1; j++)
+				{
+					while (Serial.available() == 0)
+						;
+					h_path_gap_buff[i][j] = (uint8_t)Serial.read();
+				}
+			}
+		}
+
+		// read vertical path gaps (uint8 mm) if present
+		if (v_count > 1)
+		{
+			for (int i = 0; i < v_count - 1; i++)
+			{
+				for (int j = 0; j < h_count; j++)
+				{
+					while (Serial.available() == 0)
+						;
+					v_path_gap_buff[i][j] = (uint8_t)Serial.read();
 				}
 			}
 		}
