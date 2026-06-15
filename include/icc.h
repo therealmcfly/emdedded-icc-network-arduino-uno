@@ -9,7 +9,7 @@ extern "C"
 {
 #endif
 
-#define Q1_SLOP_15SECS (-0.152394f)     /* derived: slope = -0.6455/(15-10.765) — verify against model */
+#define Q1_SLOP_15SECS (-0.152394f) /* derived: slope = -0.6455/(15-10.765) — verify against model */
 #define Q1_SLOP_20SECS (-0.069979275f)
 #define Q1_SLOP_23SECS (-0.052964706f)
 #define Q1_SLOP_26SECS (-0.044836975f) /* linearly interpolated between 23 s and 30 s — verify against model */
@@ -35,9 +35,17 @@ extern "C"
 		WAIT = 4
 	} IccState;
 
+	// create position
+	typedef struct IccPosition
+	{
+		uint8_t row;
+		uint8_t col;
+	} IccPosition;
+
 	typedef struct Icc
 	{
 		IccState state;
+		IccPosition pos;
 		float v;
 		float vreset;
 		float vmax;
@@ -49,7 +57,7 @@ extern "C"
 		int8_t slope_idx;
 	} Icc;
 
-	void icc_init(Icc *icc, int8_t *pm_sw_interval);
+	void icc_init(Icc *icc, int8_t *pm_sw_interval, uint8_t row, uint8_t col);
 	float icc_update(Icc *icc, uint32_t dt_ms);
 	uint8_t icc_state_index(const Icc *icc);
 

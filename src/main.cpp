@@ -1,12 +1,13 @@
 #include <Arduino.h>
 #include "icc.h"
 #include "path.h"
+#include "egm.h"
 
-#define MAX_V_ICC_COUNT 10
-#define MAX_H_ICC_COUNT 10
+#define MAX_V_ICC_COUNT 5
+#define MAX_H_ICC_COUNT 5
 
-#define DEFAULT_ICC_H_COUNT 10
-#define DEFAULT_ICC_V_COUNT 10
+#define DEFAULT_ICC_H_COUNT 5
+#define DEFAULT_ICC_V_COUNT 5
 #define DEFAULT_ICC_SLOWWAVE_INTERVAL 20
 
 // #define PACEMAKER_CELL_ROW 0
@@ -15,6 +16,8 @@
 // #define OTHER_ICC_SLOWWAVE_INTERVAL 0
 #define DEFAULT_TIME_STEP_MS 200U
 
+#define ELECTRODE_COUNT 1
+
 static Icc iccs[MAX_V_ICC_COUNT][MAX_H_ICC_COUNT];
 static IccPath h_paths[MAX_V_ICC_COUNT][MAX_H_ICC_COUNT - 1];
 static float h_path_t1[MAX_V_ICC_COUNT][MAX_H_ICC_COUNT - 1];
@@ -22,10 +25,14 @@ static float h_path_t2[MAX_V_ICC_COUNT][MAX_H_ICC_COUNT - 1];
 static IccPath v_paths[MAX_V_ICC_COUNT - 1][MAX_H_ICC_COUNT];
 static float v_path_t1[MAX_V_ICC_COUNT - 1][MAX_H_ICC_COUNT];
 static float v_path_t2[MAX_V_ICC_COUNT - 1][MAX_H_ICC_COUNT];
+static PathDipole h_path_dipoles[MAX_V_ICC_COUNT][MAX_H_ICC_COUNT - 1];
+static PathDipole v_path_dipoles[MAX_V_ICC_COUNT - 1][MAX_H_ICC_COUNT];
 
-static int8_t icc_interval_buff[MAX_V_ICC_COUNT][MAX_H_ICC_COUNT];
+static int8_t icc_sw_interval_buff[MAX_V_ICC_COUNT][MAX_H_ICC_COUNT];
 static uint16_t h_path_delay_buff[MAX_V_ICC_COUNT][MAX_H_ICC_COUNT - 1];
 static uint16_t v_path_delay_buff[MAX_V_ICC_COUNT - 1][MAX_H_ICC_COUNT];
+static uint8_t h_path_gap_buff[MAX_V_ICC_COUNT][MAX_H_ICC_COUNT - 1];
+static uint8_t v_path_gap_buff[MAX_V_ICC_COUNT - 1][MAX_H_ICC_COUNT];
 
 static uint32_t next_step_ms = 0U;
 static uint32_t sample_index = 0U;
@@ -35,8 +42,12 @@ uint8_t v_count = DEFAULT_ICC_V_COUNT;
 uint8_t h_count = DEFAULT_ICC_H_COUNT;
 uint32_t time_step_ms = DEFAULT_TIME_STEP_MS;
 
+static Electrode electrodes[ELECTRODE_COUNT] = {
+		{4U, 1U, 1U, 0.0f}};
+
 static void init_icc_network_1d()
 {
+	// Initialize the ICCs in the network
 	for (uint8_t i = 0; i < v_count; i++)
 	{
 		for (uint8_t j = 0; j < h_count; j++)
@@ -49,19 +60,23 @@ static void init_icc_network_1d()
 			// {
 			// 	icc_init(&iccs[i][j], OTHER_ICC_SLOWWAVE_INTERVAL);
 			// }
-			icc_init(&iccs[i][j], &icc_interval_buff[i][j]);
+			icc_init(&iccs[i][j], &icc_sw_interval_buff[i][j], i, j);
 		}
 	}
 
+	// Initialize the paths and path dipole between ICCs
 	if (h_count > 1)
 	{
 		for (uint8_t i = 0; i < v_count; i++)
 		{
 			for (uint8_t j = 0; j < h_count - 1; j++)
 			{
-				icc_path_init(&h_paths[i][j], &h_path_t1[i][j], &h_path_t2[i][j], &h_path_delay_buff[i][j]);
+				// Initialize the path between adjacent ICCs
+				icc_path_init(&h_paths[i][j], &h_path_t1[i][j], &h_path_t2[i][j], &h_path_delay_buff[i][j], &h_path_gap_buff[i][j]);
 				h_paths[i][j].cells[0] = &iccs[i][j];
 				h_paths[i][j].cells[1] = &iccs[i][j + 1];
+				// Initialize the path dipole for EGM calculation
+				path_dipole_init(&h_path_dipoles[i][j], &h_paths[i][j]);
 			}
 		}
 	}
@@ -72,9 +87,12 @@ static void init_icc_network_1d()
 		{
 			for (uint8_t j = 0; j < h_count; j++)
 			{
-				icc_path_init(&v_paths[i][j], &v_path_t1[i][j], &v_path_t2[i][j], &v_path_delay_buff[i][j]);
+				// Initialize the path between adjacent ICCs
+				icc_path_init(&v_paths[i][j], &v_path_t1[i][j], &v_path_t2[i][j], &v_path_delay_buff[i][j], &v_path_gap_buff[i][j]);
 				v_paths[i][j].cells[0] = &iccs[i][j];
 				v_paths[i][j].cells[1] = &iccs[i + 1][j];
+				// Initialize the path dipole for EGM calculation
+				path_dipole_init(&v_path_dipoles[i][j], &v_paths[i][j]);
 			}
 		}
 	}
@@ -82,6 +100,7 @@ static void init_icc_network_1d()
 
 static void step_icc_network_1d(uint32_t *dt_ms)
 {
+	// Update the ICCs in the network
 	for (uint8_t i = 0; i < v_count; i++)
 	{
 		for (uint8_t j = 0; j < h_count; j++)
@@ -89,13 +108,29 @@ static void step_icc_network_1d(uint32_t *dt_ms)
 			(void)icc_update(&iccs[i][j], *dt_ms);
 		}
 	}
+
+	// Update the paths and path dipoles between ICCs
+	for (size_t e = 0; e < ELECTRODE_COUNT; e++)
+	{
+		electrode_clear(&electrodes[e]);
+	}
+
 	if (h_count > 1)
 	{
 		for (uint8_t i = 0; i < v_count; i++)
 		{
 			for (uint8_t j = 0; j < h_count - 1; j++)
 			{
-				icc_path_update(&h_paths[i][j], &h_path_t1[i][j], &h_path_t2[i][j], *dt_ms);
+				// Update the path between adjacent ICCs
+				icc_path_update(&h_paths[i][j], *dt_ms);
+				// Update the path dipole for EGM calculation
+				path_dipole_update(&h_path_dipoles[i][j]);
+				for (size_t e = 0; e < ELECTRODE_COUNT; e++)
+				{
+					electrode_add_dipole(
+							&electrodes[e],
+							&h_path_dipoles[i][j]);
+				}
 			}
 		}
 	}
@@ -105,7 +140,16 @@ static void step_icc_network_1d(uint32_t *dt_ms)
 		{
 			for (uint8_t j = 0; j < h_count; j++)
 			{
-				icc_path_update(&v_paths[i][j], &v_path_t1[i][j], &v_path_t2[i][j], *dt_ms);
+				// Update the path between adjacent ICCs
+				icc_path_update(&v_paths[i][j], *dt_ms);
+				// Update the path dipole for EGM calculation
+				path_dipole_update(&v_path_dipoles[i][j]);
+				for (size_t e = 0; e < ELECTRODE_COUNT; e++)
+				{
+					electrode_add_dipole(
+							&electrodes[e],
+							&v_path_dipoles[i][j]);
+				}
 			}
 		}
 	}
@@ -121,18 +165,37 @@ static void step_icc_network_2d(uint32_t *dt_ms)
 		}
 	}
 
+	// Update the paths and path dipoles between ICCs
+	for (size_t e = 0; e < ELECTRODE_COUNT; e++)
+	{
+		electrode_clear(&electrodes[e]);
+	}
 	for (uint8_t i = 0; i < v_count; i++)
 	{
 		for (uint8_t j = 0; j < h_count - 1; j++)
 		{
-			icc_path_update(&h_paths[i][j], &h_path_t1[i][j], &h_path_t2[i][j], *dt_ms);
+			icc_path_update(&h_paths[i][j], *dt_ms);
+			path_dipole_update(&h_path_dipoles[i][j]);
+			for (size_t e = 0; e < ELECTRODE_COUNT; e++)
+			{
+				electrode_add_dipole(
+						&electrodes[e],
+						&h_path_dipoles[i][j]);
+			}
 		}
 	}
 	for (uint8_t i = 0; i < v_count - 1; i++)
 	{
 		for (uint8_t j = 0; j < h_count; j++)
 		{
-			icc_path_update(&v_paths[i][j], &v_path_t1[i][j], &v_path_t2[i][j], *dt_ms);
+			icc_path_update(&v_paths[i][j], *dt_ms);
+			path_dipole_update(&v_path_dipoles[i][j]);
+			for (size_t e = 0; e < ELECTRODE_COUNT; e++)
+			{
+				electrode_add_dipole(
+						&electrodes[e],
+						&v_path_dipoles[i][j]);
+			}
 		}
 	}
 }
@@ -367,7 +430,7 @@ void setup()
 				while (Serial.available() == 0)
 					;
 				int8_t interval = (int8_t)Serial.read();
-				icc_interval_buff[i][j] = interval;
+				icc_sw_interval_buff[i][j] = interval;
 			}
 		}
 

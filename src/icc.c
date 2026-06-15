@@ -24,7 +24,7 @@ static float clampf(float x, float lo, float hi)
 	return x;
 }
 
-void icc_init(Icc *icc, int8_t *pm_sw_interval)
+void icc_init(Icc *icc, int8_t *pm_sw_interval, uint8_t row, uint8_t col)
 {
 	if (icc == 0)
 	{
@@ -32,6 +32,8 @@ void icc_init(Icc *icc, int8_t *pm_sw_interval)
 	}
 
 	icc->state = WAIT;
+	icc->pos.row = row;
+	icc->pos.col = col;
 	icc->v = 0.0f;
 	icc->vreset = ICC_V_RESET_DEFAULT;
 	icc->vmax = ICC_THRESHOLD_Q1_TO_Q2;

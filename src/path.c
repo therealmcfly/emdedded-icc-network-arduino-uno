@@ -30,7 +30,7 @@ static bool icc_is_active(const Icc *cell)
 	return (cell->state == Q1_UPSTROKE) || (cell->state == Q2_PLATEAU) || (cell->state == Q3_REPOLARIZATION);
 }
 
-void icc_path_init(IccPath *path, float *t1, float *t2, uint16_t *delay_ms)
+void icc_path_init(IccPath *path, float *t0, float *t1, uint16_t *delay_ms, uint8_t *gap_mm)
 {
 	if (path == 0)
 	{
@@ -40,35 +40,48 @@ void icc_path_init(IccPath *path, float *t1, float *t2, uint16_t *delay_ms)
 	path->state = PATH_IDLE;
 	path->wait_ms_accum = 0U;
 	path->initialized = true;
-	path->delay_ms = *delay_ms;
+	path->delay_ms =
+		(delay_ms != 0 && *delay_ms > 0U)
+			? *delay_ms
+			: DEFAULT_PATH_DELAY_MS;
+	path->gap_mm =
+		(gap_mm != 0 && *gap_mm > 0U)
+			? *gap_mm
+			: DEFAULT_PATH_GAP_MM;
 	path->cells[0] = 0;
 	path->cells[1] = 0;
+	path->t[0] = t0;
+	path->t[1] = t1;
 
+	if (t0 != 0)
+	{
+		*path->t[0] = 0.0f;
+	}
 	if (t1 != 0)
 	{
-		*t1 = 0.0f;
-	}
-	if (t2 != 0)
-	{
-		*t2 = 0.0f;
+		*path->t[1] = 0.0f;
 	}
 }
 
-void icc_path_update(IccPath *path, float *t1, float *t2, uint32_t dt_ms)
+void icc_path_update(IccPath *path, uint32_t dt_ms)
 {
 	if (path == 0)
 	{
-		clear_outputs(0, 0, t1, t2);
 		return;
 	}
 
-	if (!path->initialized || dt_ms == 0U || path->cells[0] == 0 || path->cells[1] == 0)
+	if (!path->initialized ||
+		dt_ms == 0U ||
+		path->cells[0] == 0 ||
+		path->cells[1] == 0 ||
+		path->t[0] == 0 ||
+		path->t[1] == 0)
 	{
-		clear_outputs(0, 0, t1, t2);
+		clear_outputs(0, 0, path->t[0], path->t[1]);
 		return;
 	}
 
-	clear_outputs(0, 0, t1, t2);
+	clear_outputs(0, 0, path->t[0], path->t[1]);
 
 	switch (path->state)
 	{
@@ -98,7 +111,7 @@ void icc_path_update(IccPath *path, float *t1, float *t2, uint32_t dt_ms)
 
 	case PATH_CELL_A_WAIT:
 		path->wait_ms_accum += dt_ms;
-		*t1 = (float)path->wait_ms_accum * 1.0e-3f;
+		*path->t[0] = (float)path->wait_ms_accum * 1.0e-3f;
 		if (path->wait_ms_accum >= (int)path->delay_ms)
 		{
 			path->cells[1]->relay = 1.0f;
@@ -113,7 +126,7 @@ void icc_path_update(IccPath *path, float *t1, float *t2, uint32_t dt_ms)
 
 	case PATH_CELL_B_WAIT:
 		path->wait_ms_accum += dt_ms;
-		*t2 = (float)path->wait_ms_accum * 1.0e-3f;
+		*path->t[1] = (float)path->wait_ms_accum * 1.0e-3f;
 		if (path->wait_ms_accum >= (int)path->delay_ms)
 		{
 			path->cells[0]->relay = 1.0f;
