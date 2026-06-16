@@ -18,6 +18,8 @@ STIM_HEADER = b'\xAA\x55'
 INTERVALS = ('-1', '0', '15', '20', '23', '26', '30', '40')
 MAX_ROWS = 5
 MAX_COLS = 5
+TIMESTEP_MIN_MS = 10
+TIMESTEP_MAX_MS = 500
 CELL_PX = 56
 LABEL_PX = 22
 TRACE_MAX_POINTS = 4000
@@ -112,6 +114,10 @@ def build_init_packet(
     return bytes(buf)
 
 
+def clamp_timestep_ms(value):
+    return max(TIMESTEP_MIN_MS, min(TIMESTEP_MAX_MS, int(value)))
+
+
 def lerp_color(c1, c2, t):
     """Linearly interpolate between two '#rrggbb' hex colours."""
     r1, g1, b1 = int(c1[1:3], 16), int(c1[3:5], 16), int(c1[5:7], 16)
@@ -136,6 +142,7 @@ class IccSignalWindow(tk.Toplevel):
         self._follow_live = True
         self._history_anchor_index = None
         self._setting_history_scroll = False
+        self._stair_step_var = tk.BooleanVar(value=False)
 
         self.title('ICC Voltage Signals')
         self.configure(bg=self._theme['bg'])
@@ -158,6 +165,11 @@ class IccSignalWindow(tk.Toplevel):
         self._follow_btn = ttk.Button(top, text='Follow live',
                                       command=self._follow_latest)
         self._follow_btn.pack(side='left', padx=(8, 0))
+        self._stair_step_check = ttk.Checkbutton(
+            top, text='Stair-step',
+            variable=self._stair_step_var,
+            command=self._redraw_all_charts)
+        self._stair_step_check.pack(side='left', padx=(8, 0))
         self._remove_btn = ttk.Button(top, text='Remove selected',
                                       command=self.remove_selected,
                                       state='disabled')
@@ -366,7 +378,7 @@ class IccSignalWindow(tk.Toplevel):
 
     def _step_seconds(self):
         try:
-            return max(0.001, int(self._app._step_var.get()) / 1000.0)
+            return clamp_timestep_ms(self._app._step_var.get()) / 1000.0
         except (tk.TclError, ValueError):
             return 0.2
 
@@ -523,18 +535,24 @@ class IccSignalWindow(tk.Toplevel):
         else:
             x_left, x_right = x0, x1
 
+        stair_step = self._stair_step_var.get()
+        last_y = None
         for sample_index in range(start_index, end_index + 1):
             value = values[sample_index]
             position = sample_index - (end_index - visible_samples + 1)
             x = x_left + position / span * (x_right - x_left)
             clipped = max(v_min, min(v_max, value))
             y = y1 - (clipped - v_min) / (v_max - v_min) * (y1 - y0)
+            if stair_step and last_y is not None:
+                points.extend((x, last_y))
             points.extend((x, y))
+            last_y = y
         start_s = -(offset_seconds + self._window_seconds())
         end_s = -offset_seconds
         self._draw_time_ticks(canvas, x0, x1, y0, y1, live, now_x, start_s, end_s)
         if len(points) >= 4:
-            canvas.create_line(*points, fill=t['pkt_fg'], width=2, smooth=True)
+            canvas.create_line(*points, fill=t['pkt_fg'], width=2,
+                               smooth=not stair_step)
 
     def _value_range(self):
         try:
@@ -824,7 +842,7 @@ class App(tk.Tk):
         r2.pack(fill='x')
         ttk.Label(r2, text='Timestep (ms)').pack(side='left')
         self._step_var = tk.IntVar(value=200)
-        ttk.Spinbox(r2, from_=50, to=5000, increment=50,
+        ttk.Spinbox(r2, from_=TIMESTEP_MIN_MS, to=TIMESTEP_MAX_MS, increment=10,
                     textvariable=self._step_var, width=6).pack(side='left', padx=3)
         ttk.Button(r2, text='Save', command=self._save_settings).pack(side='left', padx=(8, 2))
         ttk.Button(r2, text='Load', command=self._load_settings).pack(side='left')
@@ -1373,6 +1391,9 @@ class App(tk.Tk):
             self._open_trace_window(row, col)
 
     def _toggle_electrode_mode(self):
+        if self._board_initialized:
+            self._open_egm_viewer()
+            return
         if self._electrode_mode:
             self._exit_electrode_mode('Electrode placement complete')
         else:
@@ -1402,8 +1423,8 @@ class App(tk.Tk):
         self._electrode_mode = False
         self._set_controls_for_stimulation(True)
         self._electrode_btn.configure(
-            text='Set Electrodes',
-            state='disabled' if self._board_initialized else 'normal')
+            text='EGM Viewer' if self._board_initialized else 'Set Electrodes',
+            state='normal')
         self.unbind('<Escape>')
         if status_text:
             self._status_var.set(status_text)
@@ -1422,12 +1443,38 @@ class App(tk.Tk):
         self._electrodes[key] = height_mm
         self._canvas.itemconfigure(
             self._electrode_markers[key], state='normal')
-        if self._egm_window is None or not self._egm_window.winfo_exists():
-            self._egm_window = EgmSignalWindow(self)
-        self._egm_window.add_trace(row, col)
-        self._egm_window._update_chart_title(key)
+        electrodes = [
+            (erow, ecol, height)
+            for (erow, ecol), height in self._electrodes.items()
+            if erow < rows and ecol < cols
+        ]
+        self._ensure_egm_window_for_electrodes(electrodes)
+        if self._egm_window and self._egm_window.winfo_exists():
+            self._egm_window.select_trace(key)
         self._status_var.set(
             f'Electrode set at r{row} c{col}, height {height_mm} mm')
+
+    def _ensure_egm_window_for_electrodes(self, electrodes):
+        if not electrodes:
+            return
+        if self._egm_window is None or not self._egm_window.winfo_exists():
+            self._egm_window = EgmSignalWindow(self)
+        for row, col, _height in electrodes:
+            self._egm_window.add_trace(row, col)
+            self._egm_window._update_chart_title((row, col))
+        self._egm_window.update_edit_state()
+        self._egm_window.lift()
+
+    def _open_egm_viewer(self):
+        electrodes = [
+            (row, col, height)
+            for (row, col), height in self._electrodes.items()
+            if row < self._rows and col < self._cols
+        ]
+        if not electrodes:
+            self._status_var.set('No electrodes set for EGM viewer')
+            return
+        self._ensure_egm_window_for_electrodes(electrodes)
 
     def _remove_electrode(self, key):
         self._electrodes.pop(key, None)
@@ -1589,7 +1636,7 @@ class App(tk.Tk):
         self._cols = 0
         self._bytes_rx = 0
         self._board_initialized = False
-        self._electrode_btn.configure(state='normal')
+        self._electrode_btn.configure(text='Set Electrodes', state='normal')
         if self._egm_window and self._egm_window.winfo_exists():
             self._egm_window.update_edit_state()
 
@@ -1604,7 +1651,8 @@ class App(tk.Tk):
         try:
             rows = max(1, min(MAX_ROWS, int(self._rows_var.get())))
             cols = max(1, min(MAX_COLS, int(self._cols_var.get())))
-            step = int(self._step_var.get())
+            step = clamp_timestep_ms(self._step_var.get())
+            self._step_var.set(step)
         except (tk.TclError, ValueError) as exc:
             messagebox.showerror('Invalid input', str(exc))
             return
@@ -1644,9 +1692,8 @@ class App(tk.Tk):
         self._ser.reset_input_buffer()
         self._ser.write(packet)
         self._board_initialized = True
-        self._electrode_btn.configure(state='disabled')
-        if self._egm_window and self._egm_window.winfo_exists():
-            self._egm_window.update_edit_state()
+        self._electrode_btn.configure(text='EGM Viewer', state='normal')
+        self._ensure_egm_window_for_electrodes(electrodes)
         self._status_var.set(f'Running  {rows}×{cols}  step={step} ms')
 
     # ── background serial reader ──────────────────────────────────────────────
@@ -1745,7 +1792,8 @@ class App(tk.Tk):
         try:
             rows = max(1, min(MAX_ROWS, int(self._rows_var.get())))
             cols = max(1, min(MAX_COLS, int(self._cols_var.get())))
-            step = int(self._step_var.get())
+            step = clamp_timestep_ms(self._step_var.get())
+            self._step_var.set(step)
         except (tk.TclError, ValueError) as exc:
             messagebox.showerror('Invalid input', str(exc))
             return
@@ -1799,7 +1847,7 @@ class App(tk.Tk):
         try:
             rows = max(1, min(MAX_ROWS, int(data['rows'])))
             cols = max(1, min(MAX_COLS, int(data['cols'])))
-            step = int(data['step_ms'])
+            step = clamp_timestep_ms(data['step_ms'])
         except (KeyError, ValueError) as exc:
             messagebox.showerror('Invalid file', str(exc))
             return
