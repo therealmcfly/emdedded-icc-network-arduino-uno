@@ -46,7 +46,7 @@ THEMES = {
         'wait_text':        '#4a8ab5',
         'axis_label':       '#555555',
         'status_fg':        '#888888',
-        'pkt_fg':           '#4ec9b0',
+        'pkt_fg':           '#3b82f6',
         'cb_list_bg':       '#2d2d2d',
         'cb_list_fg':       '#d4d4d4',
     },
@@ -68,7 +68,7 @@ THEMES = {
         'wait_text':        '#1060a0',
         'axis_label':       '#888888',
         'status_fg':        '#555555',
-        'pkt_fg':           '#007060',
+        'pkt_fg':           '#0067c0',
         'cb_list_bg':       '#ffffff',
         'cb_list_fg':       '#333333',
     },
@@ -736,6 +736,8 @@ class App(tk.Tk):
             self._pkt_lbl.configure(foreground=t['pkt_fg'])
         if self._trace_window and self._trace_window.winfo_exists():
             self._trace_window.apply_theme(t)
+        if self._egm_window and self._egm_window.winfo_exists():
+            self._egm_window.apply_theme(t)
 
     # ── left panel (scrollable) ───────────────────────────────────────────────
 
@@ -1342,7 +1344,7 @@ class App(tk.Tk):
                 marker = self._canvas.create_oval(
                     x0 + CELL_PX - 15, y0 + 3,
                     x0 + CELL_PX - 3, y0 + 15,
-                    fill='#00a86b', outline='white', width=1,
+                    fill='#0067c0', outline='white', width=1,
                     state='hidden')
                 self._electrode_markers[(r, c)] = marker
                 self._canvas.tag_bind(
