@@ -121,7 +121,19 @@ static void step_icc_network_1d(uint32_t *dt_ms)
 			for (uint8_t j = 0; j < h_count - 1; j++)
 			{
 				// Update the path between adjacent ICCs
-				icc_path_update(&h_paths[i][j], *dt_ms);
+				int8_t relay = -1;
+				icc_path_update(&h_paths[i][j], *dt_ms, &relay);
+				switch (relay)
+				{
+				case 0:
+					(void)icc_apply_relay(&iccs[i][j]);
+					break;
+				case 1:
+					(void)icc_apply_relay(&iccs[i][j + 1]);
+					break;
+				default:
+					break;
+				}
 				// Update the path dipole for EGM calculation
 				path_dipole_update(&h_path_dipoles[i][j]);
 				for (size_t e = 0; e < electrode_count; e++)
@@ -140,7 +152,20 @@ static void step_icc_network_1d(uint32_t *dt_ms)
 			for (uint8_t j = 0; j < h_count; j++)
 			{
 				// Update the path between adjacent ICCs
-				icc_path_update(&v_paths[i][j], *dt_ms);
+				int8_t relay = -1;
+				icc_path_update(&v_paths[i][j], *dt_ms, &relay);
+				switch (relay)
+				{
+				case 0:
+					(void)icc_apply_relay(&iccs[i][j]);
+					break;
+				case 1:
+					(void)icc_apply_relay(&iccs[i + 1][j]);
+					break;
+				default:
+					break;
+				}
+
 				// Update the path dipole for EGM calculation
 				path_dipole_update(&v_path_dipoles[i][j]);
 				for (size_t e = 0; e < electrode_count; e++)
@@ -173,7 +198,19 @@ static void step_icc_network_2d(uint32_t *dt_ms)
 	{
 		for (uint8_t j = 0; j < h_count - 1; j++)
 		{
-			icc_path_update(&h_paths[i][j], *dt_ms);
+			int8_t relay = -1;
+			icc_path_update(&h_paths[i][j], *dt_ms, &relay);
+			switch (relay)
+			{
+			case 0:
+				(void)icc_apply_relay(&iccs[i][j]);
+				break;
+			case 1:
+				(void)icc_apply_relay(&iccs[i][j + 1]);
+				break;
+			default:
+				break;
+			}
 			path_dipole_update(&h_path_dipoles[i][j]);
 			for (size_t e = 0; e < electrode_count; e++)
 			{
@@ -187,7 +224,19 @@ static void step_icc_network_2d(uint32_t *dt_ms)
 	{
 		for (uint8_t j = 0; j < h_count; j++)
 		{
-			icc_path_update(&v_paths[i][j], *dt_ms);
+			int8_t relay = -1;
+			icc_path_update(&v_paths[i][j], *dt_ms, &relay);
+			switch (relay)
+			{
+			case 0:
+				(void)icc_apply_relay(&iccs[i][j]);
+				break;
+			case 1:
+				(void)icc_apply_relay(&iccs[i + 1][j]);
+				break;
+			default:
+				break;
+			}
 			path_dipole_update(&v_path_dipoles[i][j]);
 			for (size_t e = 0; e < electrode_count; e++)
 			{
@@ -510,8 +559,8 @@ void setup()
 		const uint8_t requested_electrode_count = (uint8_t)Serial.read();
 		electrode_count =
 				requested_electrode_count > MAX_ELECTRODE_COUNT
-					? MAX_ELECTRODE_COUNT
-					: requested_electrode_count;
+						? MAX_ELECTRODE_COUNT
+						: requested_electrode_count;
 
 		for (uint8_t i = 0; i < requested_electrode_count; i++)
 		{

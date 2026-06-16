@@ -59,6 +59,7 @@ extern "C"
 
 	void icc_init(Icc *icc, int8_t *pm_sw_interval, uint8_t row, uint8_t col);
 	float icc_update(Icc *icc, uint32_t dt_ms);
+	bool icc_apply_relay(Icc *icc);
 	uint8_t icc_state_index(const Icc *icc);
 
 #ifdef __cplusplus

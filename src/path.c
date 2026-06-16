@@ -41,13 +41,13 @@ void icc_path_init(IccPath *path, float *t0, float *t1, uint16_t *delay_ms, uint
 	path->wait_ms_accum = 0U;
 	path->initialized = true;
 	path->delay_ms =
-		(delay_ms != 0 && *delay_ms > 0U)
-			? *delay_ms
-			: DEFAULT_PATH_DELAY_MS;
+			(delay_ms != 0 && *delay_ms > 0U)
+					? *delay_ms
+					: DEFAULT_PATH_DELAY_MS;
 	path->gap_mm =
-		(gap_mm != 0 && *gap_mm > 0U)
-			? *gap_mm
-			: DEFAULT_PATH_GAP_MM;
+			(gap_mm != 0 && *gap_mm > 0U)
+					? *gap_mm
+					: DEFAULT_PATH_GAP_MM;
 	path->cells[0] = 0;
 	path->cells[1] = 0;
 	path->t[0] = t0;
@@ -63,19 +63,24 @@ void icc_path_init(IccPath *path, float *t0, float *t1, uint16_t *delay_ms, uint
 	}
 }
 
-void icc_path_update(IccPath *path, uint32_t dt_ms)
+void icc_path_update(IccPath *path, uint32_t dt_ms, int8_t *relay)
 {
+	if (relay != 0)
+	{
+		*relay = -1;
+	}
+
 	if (path == 0)
 	{
 		return;
 	}
 
 	if (!path->initialized ||
-		dt_ms == 0U ||
-		path->cells[0] == 0 ||
-		path->cells[1] == 0 ||
-		path->t[0] == 0 ||
-		path->t[1] == 0)
+			dt_ms == 0U ||
+			path->cells[0] == 0 ||
+			path->cells[1] == 0 ||
+			path->t[0] == 0 ||
+			path->t[1] == 0)
 	{
 		clear_outputs(0, 0, path->t[0], path->t[1]);
 		return;
@@ -115,6 +120,10 @@ void icc_path_update(IccPath *path, uint32_t dt_ms)
 		if (path->wait_ms_accum >= (int)path->delay_ms)
 		{
 			path->cells[1]->relay = 1.0f;
+			if (relay != 0)
+			{
+				*relay = 1;
+			}
 			path->wait_ms_accum = 0U;
 			path->state = PATH_CELL_A_RELAY;
 		}
@@ -130,6 +139,10 @@ void icc_path_update(IccPath *path, uint32_t dt_ms)
 		if (path->wait_ms_accum >= (int)path->delay_ms)
 		{
 			path->cells[0]->relay = 1.0f;
+			if (relay != 0)
+			{
+				*relay = 0;
+			}
 			path->wait_ms_accum = 0U;
 			path->state = PATH_CELL_B_RELAY;
 		}

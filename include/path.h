@@ -6,7 +6,7 @@
 #include "icc.h"
 
 #define DEFAULT_PATH_DELAY_MS 1000U // Propagation time taken between ICCs
-#define DEFAULT_PATH_GAP_MM 6U // Default distance between connected ICCs
+#define DEFAULT_PATH_GAP_MM 6U			// Default distance between connected ICCs
 
 #ifdef __cplusplus
 extern "C"
@@ -35,7 +35,7 @@ extern "C"
 	} IccPath;
 
 	void icc_path_init(IccPath *path, float *t1, float *t2, uint16_t *delay_ms, uint8_t *gap_mm);
-	void icc_path_update(IccPath *path, uint32_t dt_ms);
+	void icc_path_update(IccPath *path, uint32_t dt_ms, int8_t *relay);
 	uint8_t icc_path_state_index(const IccPath *path);
 
 #ifdef __cplusplus

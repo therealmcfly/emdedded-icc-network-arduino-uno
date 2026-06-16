@@ -72,6 +72,35 @@ void icc_init(Icc *icc, int8_t *pm_sw_interval, uint8_t row, uint8_t col)
 	}
 }
 
+bool icc_apply_relay(Icc *icc)
+{
+	if (icc == 0 || !icc->initialized || icc->relay <= 0)
+	{
+		return false;
+	}
+
+	if (icc->state != Q0_RESTING)
+	{
+		icc->relay = 0;
+		return false;
+	}
+
+	if (icc->slope_idx == -1)
+	{
+		icc->relay = 0;
+		return false;
+	}
+
+	icc->vreset = icc->v;
+	icc->vmax = ICC_THRESHOLD_Q1_TO_Q2;
+	icc->d2 = ICC_SLOPE_Q2;
+	icc->state = Q1_UPSTROKE;
+	icc->reset = !icc->reset;
+	icc->v = icc->vreset;
+	icc->relay = 0;
+	return true;
+}
+
 float icc_update(Icc *icc, uint32_t dt_ms)
 {
 	bool did_reset = false;
