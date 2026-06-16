@@ -11,9 +11,11 @@ src/
   main.cpp       — Arduino runtime: serial init, network step loop, telemetry
   icc.c          — ICC cell state machine (Q0–Q3 + WAIT)
   path.c         — IccPath relay model between neighbouring cells
+  egm.c          - Path dipole and electrode potential calculation
 include/
   icc.h          — Icc struct, constants, and API
   path.h         — IccPath struct and API
+  egm.h          - PathDipole and Electrode structs and API
 controller/
   controller.py  — Desktop GUI (Python/Tkinter)
   controller.spec
@@ -92,10 +94,14 @@ Each ICC cell cycles through five states:
 
 `IccPath` connects two adjacent cells. When the upstream cell fires, the path starts a timed relay that triggers the downstream cell after the configured delay.
 
+### `src/egm.c` - EGM path dipoles and electrodes
+
+Each path has a `PathDipole` that is active while propagation is travelling across that path. Each configured `Electrode` stores a grid position, height above the tissue plane, and the summed potential contribution from all active path dipoles.
+
 ### `src/main.cpp` — Runtime
 
 - Waits for an `ICCF` init packet over serial before starting.
-- Unpacks rows, cols, timestep, per-cell intervals, path delays, and path gaps from the packet.
+- Unpacks rows, cols, timestep, per-cell intervals, path delays, path gaps, and electrode definitions from the packet.
 - Runs `step_icc_network_1d()` at the configured timestep and streams a binary telemetry packet after each step.
 
 ---
@@ -135,3 +141,4 @@ A cell voltage of exactly `0.0` indicates the WAIT state.
 ## Hardware
 
 Targets **Arduino Mega 2560** (ATmega2560, 8 KB SRAM). The compile-time network limit is 5×5 to leave working memory for path dipoles, electrodes, serial processing, and the runtime stack.
+

@@ -65,8 +65,8 @@ Sends the ICCF init packet to the board with the current settings. Must be click
 
 | Field         | Description                                                  |
 | ------------- | ------------------------------------------------------------ |
-| Rows / Cols   | Grid dimensions (1–10 each)                                  |
-| Timestep (ms) | Simulation step size sent to the board                       |
+| Rows / Cols   | Grid dimensions (1-5 each)                                    |
+| Timestep (ms) | Simulation step size sent to the board, limited to 10-500 ms |
 | Save / Load   | Save or load the full grid configuration to/from a JSON file |
 
 #### Slow-Wave Intervals (s)
@@ -98,6 +98,8 @@ Physical spacing for each horizontal and vertical path. The **All H-paths / All 
 
 Before initialization, click **Set Electrodes**, choose the electrode height, and click ICC blocks to place electrodes. The EGM Signals window opens with one trace per electrode. Electrodes can be removed before initialization; their configuration is locked after **Initialize Board** is pressed.
 
+After initialization, the same button becomes **EGM Viewer**. Click it to reopen or raise the EGM Signals window for the configured electrodes.
+
 ---
 
 ### Live ICC Activity Viewer
@@ -113,6 +115,7 @@ Real-time heatmap of cell voltages. The canvas resizes automatically when the gr
 - Click additional blocks to append separate real-time charts below the existing traces.
 - Use **Width (s)** in the signal window to choose how much recent signal history is visible in each moving chart.
 - Use the **History** slider to freeze all charts on a past sample window, then click **Follow live** to return to the advancing live 4/5-position view.
+- Use **Stair-step** in the signal window to switch between smoothed trace display and sample-and-hold stair-step display.
 - Deactivated ICC traces are labelled **DEACTIVATED** in red in the signal window.
 - Second markers are drawn below each chart and automatically space themselves for the selected signal width.
 - In the signal window, click a chart to select it, then use **Remove selected** to remove that ICC trace.
@@ -188,11 +191,17 @@ Settings are stored as JSON:
 
 ```json
 {
-  "rows": 10,
-  "cols": 10,
+  "rows": 5,
+  "cols": 5,
   "step_ms": 200,
   "intervals": [[0, 20, ...], ...],
   "h_delays": [[1000, ...], ...],
-  "v_delays": [[1000, ...], ...]
+  "v_delays": [[1000, ...], ...],
+  "h_gaps": [[6, ...], ...],
+  "v_gaps": [[6, ...], ...],
+  "electrodes": [
+    {"row": 0, "col": 2, "height_mm": 1}
+  ]
 }
 ```
+
