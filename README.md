@@ -103,6 +103,7 @@ Each path has a `PathDipole` that is active while propagation is travelling acro
 - Waits for an `ICCF` init packet over serial before starting.
 - Unpacks rows, cols, timestep, per-cell intervals, path delays, path gaps, and electrode definitions from the packet.
 - Runs `step_icc_network_1d()` at the configured timestep and streams a binary telemetry packet after each step.
+- Sends an EGM-only packet on Mega `Serial1` for the pacemaker interface.
 
 ---
 
@@ -135,6 +136,14 @@ Sent every timestep while running.
 | electrode count × 4 | EGM potentials (float32 LE, initialization order) |
 
 A cell voltage of exactly `0.0` indicates the WAIT state.
+
+### Pacemaker EGM sample (board to pacemaker, Serial1)
+
+Sent every timestep on Mega `Serial1` at 115200 baud. `Serial1` uses TX1 pin 18 and RX1 pin 19; the current firmware writes this sample to TX1. The sample is the first configured electrode potential multiplied by 1000, clamped to `int16_t`, and sent little-endian.
+
+| Bytes | Field |
+|---|---|
+| 2 | EGM sample (int16 LE, electrode 0 potential x 1000) |
 
 ---
 

@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <limits.h>
 #include "icc.h"
 #include "path.h"
 #include "egm.h"
@@ -11,8 +12,6 @@
 #define DEFAULT_ICC_V_COUNT 5
 #define DEFAULT_ICC_SLOWWAVE_INTERVAL 20
 
-// #define PACEMAKER_CELL_ROW 0
-// #define PACEMAKER_CELL_COL 0
 // #define DEFAULT_PM_SLOWWAVE_INTERVAL 20
 // #define OTHER_ICC_SLOWWAVE_INTERVAL 0
 #define DEFAULT_TIME_STEP_MS 200U
@@ -36,6 +35,7 @@ static uint8_t v_path_gap_buff[MAX_V_ICC_COUNT - 1][MAX_H_ICC_COUNT];
 static uint32_t next_step_ms = 0U;
 static uint32_t sample_index = 0U;
 static const uint8_t kPacketHeader[2] = {0xAA, 0x55};
+static const float kPacemakerEgmGain = 1000.0f;
 
 uint8_t v_count = DEFAULT_ICC_V_COUNT;
 uint8_t h_count = DEFAULT_ICC_H_COUNT;
@@ -332,6 +332,29 @@ static void send_telemetry_packet()
 	}
 }
 
+static void send_pacemaker_egm_packet()
+{
+	float egm = 0.0f;
+	if (electrode_count > 0U)
+	{
+		egm = electrodes[0].potential;
+	}
+
+	float scaled = egm * kPacemakerEgmGain;
+	if (scaled > (float)INT16_MAX)
+	{
+		scaled = (float)INT16_MAX;
+	}
+	else if (scaled < (float)INT16_MIN)
+	{
+		scaled = (float)INT16_MIN;
+	}
+
+	int16_t sample = (int16_t)scaled;
+	// Serial1.write(kPacketHeader, sizeof(kPacketHeader));
+	Serial1.write((const uint8_t *)&sample, sizeof(sample));
+}
+
 static void apply_ext_stimulus(int8_t row, int8_t col)
 {
 	if (row < 0 || col < 0)
@@ -395,6 +418,28 @@ static void check_ext_stimuli()
 	}
 }
 
+static void check_pacemaker_stimulus()
+{
+	while (Serial1.available() > 0)
+	{
+		int incoming = Serial1.read();
+		if (incoming < 0)
+		{
+			continue;
+		}
+
+		if ((uint8_t)incoming == 1U)
+		{
+			if (electrode_count > 0U)
+			{
+				apply_ext_stimulus(
+						(int8_t)electrodes[0].row,
+						(int8_t)electrodes[0].col);
+			}
+		}
+	}
+}
+
 static bool wait_for_init_packet()
 {
 	static const uint8_t kInitHeader[4] = {'I', 'C', 'C', 'F'};
@@ -432,6 +477,7 @@ void setup()
 	bool is_serial_connected = false;
 
 	Serial.begin(115200);
+	Serial1.begin(115200);
 
 	while (!is_serial_connected)
 	{
@@ -597,6 +643,8 @@ void loop()
 	step_icc_network_1d(&time_step_ms);
 	// print_telemetry();
 	send_telemetry_packet();
+	send_pacemaker_egm_packet();
 	check_ext_stimuli();
+	check_pacemaker_stimulus();
 	next_step_ms += time_step_ms;
 }
