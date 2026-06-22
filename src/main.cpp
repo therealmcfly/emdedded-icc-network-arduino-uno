@@ -43,6 +43,9 @@ uint32_t time_step_ms = DEFAULT_TIME_STEP_MS;
 
 static Electrode electrodes[MAX_ELECTRODE_COUNT];
 static uint8_t electrode_count = 0U;
+static bool pacing_lead_enabled = false;
+static uint8_t pacing_lead_row = 0U;
+static uint8_t pacing_lead_col = 0U;
 
 static void init_icc_network_1d()
 {
@@ -430,11 +433,11 @@ static void check_pacemaker_stimulus()
 
 		if ((uint8_t)incoming == 1U)
 		{
-			if (electrode_count > 0U)
+			if (pacing_lead_enabled)
 			{
 				apply_ext_stimulus(
-						(int8_t)electrodes[0].row,
-						(int8_t)electrodes[0].col);
+						(int8_t)pacing_lead_row,
+						(int8_t)pacing_lead_col);
 			}
 		}
 	}
@@ -489,7 +492,8 @@ void setup()
 	// then rows*cols bytes of per-cell freq, then (if cols>1) rows*(cols-1) uint16 LE
 	// horizontal delays, then (if rows>1) (rows-1)*cols uint16 LE vertical delays,
 	// followed by matching uint8 H-path and V-path gaps in millimetres,
-	// then electrode_count and row/column/height bytes for each electrode.
+	// then electrode_count and row/column/height bytes for each electrode,
+	// then pacing-lead enabled/row/column bytes.
 	{
 		uint8_t b = 0;
 
@@ -624,6 +628,20 @@ void setup()
 			{
 				electrode_init(&electrodes[i], row, col, height_mm);
 			}
+		}
+
+		while (Serial.available() == 0)
+			;
+		pacing_lead_enabled = ((uint8_t)Serial.read()) != 0U;
+		while (Serial.available() == 0)
+			;
+		pacing_lead_row = (uint8_t)Serial.read();
+		while (Serial.available() == 0)
+			;
+		pacing_lead_col = (uint8_t)Serial.read();
+		if (pacing_lead_row >= v_count || pacing_lead_col >= h_count)
+		{
+			pacing_lead_enabled = false;
 		}
 	}
 

@@ -77,13 +77,14 @@ THEMES = {
 
 def build_init_packet(
         rows, cols, step_ms, intervals,
-        h_delays, v_delays, h_gaps, v_gaps, electrodes):
+        h_delays, v_delays, h_gaps, v_gaps, electrodes, pacing_lead=None):
     """Pack the ICCF init packet.
     h_delays: list[rows][cols-1] of ms values (ignored when cols==1)
     v_delays: list[rows-1][cols] of ms values (ignored when rows==1)
     h_gaps: list[rows][cols-1] of mm values (ignored when cols==1)
     v_gaps: list[rows-1][cols] of mm values (ignored when rows==1)
     electrodes: list of (row, col, height_mm)
+    pacing_lead: optional (row, col) for pacemaker-triggered stimulation
     """
     buf = bytearray(INIT_HEADER)
     buf.append(rows)
@@ -111,6 +112,11 @@ def build_init_packet(
     buf += struct.pack('<B', len(electrodes))
     for row, col, height_mm in electrodes:
         buf += struct.pack('<BBB', row, col, height_mm)
+    if pacing_lead is None:
+        buf += struct.pack('<BBB', 0, 0, 0)
+    else:
+        row, col = pacing_lead
+        buf += struct.pack('<BBB', 1, row, col)
     return bytes(buf)
 
 
@@ -671,8 +677,10 @@ class App(tk.Tk):
         self._egm_window = None
         self._stim_mode = False
         self._electrode_mode = False
+        self._pacing_lead_mode = False
         self._board_initialized = False
         self._electrodes = {}
+        self._pacing_lead = None
         self._stim_disabled_widgets = []
 
         self._paned = ttk.PanedWindow(self, orient='horizontal')
@@ -1241,6 +1249,13 @@ class App(tk.Tk):
         self.after(50, self._fit_window)
 
     def _prune_electrodes(self, rows, cols):
+        if (self._pacing_lead is not None and
+                (self._pacing_lead[0] >= rows or self._pacing_lead[1] >= cols)):
+            marker = self._pacing_lead_markers.get(self._pacing_lead)
+            if marker is not None:
+                self._canvas.itemconfigure(marker, state='hidden')
+            self._pacing_lead = None
+
         invalid = [
             key for key in self._electrodes
             if key[0] >= rows or key[1] >= cols
@@ -1302,6 +1317,10 @@ class App(tk.Tk):
             electrode_row, from_=0, to=255, increment=1,
             textvariable=self._electrode_height_var, width=4)
         self._electrode_height_spin.pack(side='left')
+        self._pacing_lead_btn = ttk.Button(
+            mode_controls, text='Set Pacing Lead',
+            command=self._toggle_pacing_lead_mode)
+        self._pacing_lead_btn.pack(fill='x', pady=(4, 0))
 
         cw = LABEL_PX + MAX_COLS * CELL_PX
         ch = LABEL_PX + MAX_ROWS * CELL_PX
@@ -1313,6 +1332,7 @@ class App(tk.Tk):
         self._cells = {}
         self._ctexts = {}
         self._electrode_markers = {}
+        self._pacing_lead_markers = {}
         self._col_label_ids = []
         self._row_label_ids = []
 
@@ -1347,6 +1367,14 @@ class App(tk.Tk):
                     fill='#0067c0', outline='white', width=1,
                     state='hidden')
                 self._electrode_markers[(r, c)] = marker
+                lead_marker = self._canvas.create_polygon(
+                    x0 + 9, y0 + 3,
+                    x0 + 15, y0 + 9,
+                    x0 + 9, y0 + 15,
+                    x0 + 3, y0 + 9,
+                    fill='#d97706', outline='white', width=1,
+                    state='hidden')
+                self._pacing_lead_markers[(r, c)] = lead_marker
                 self._canvas.tag_bind(
                     rid, '<Button-1>',
                     lambda _e, row=r, col=c: self._on_live_cell_click(row, col))
@@ -1355,6 +1383,9 @@ class App(tk.Tk):
                     lambda _e, row=r, col=c: self._on_live_cell_click(row, col))
                 self._canvas.tag_bind(
                     marker, '<Button-1>',
+                    lambda _e, row=r, col=c: self._on_live_cell_click(row, col))
+                self._canvas.tag_bind(
+                    lead_marker, '<Button-1>',
                     lambda _e, row=r, col=c: self._on_live_cell_click(row, col))
 
         bar = ttk.Frame(right)
@@ -1387,6 +1418,8 @@ class App(tk.Tk):
     def _on_live_cell_click(self, row, col):
         if self._electrode_mode:
             self._set_electrode(row, col)
+        elif self._pacing_lead_mode:
+            self._set_pacing_lead(row, col)
         elif self._stim_mode:
             self._send_stimulation(row, col)
         else:
@@ -1404,6 +1437,8 @@ class App(tk.Tk):
     def _enter_electrode_mode(self):
         if self._board_initialized:
             return
+        if self._pacing_lead_mode:
+            self._exit_pacing_lead_mode()
         self._electrode_mode = True
         allowed = {self._electrode_btn, self._electrode_height_spin}
         if self._egm_window and self._egm_window.winfo_exists():
@@ -1483,6 +1518,61 @@ class App(tk.Tk):
         marker = self._electrode_markers.get(key)
         if marker is not None:
             self._canvas.itemconfigure(marker, state='hidden')
+
+    def _toggle_pacing_lead_mode(self):
+        if self._board_initialized:
+            return
+        if self._pacing_lead_mode:
+            self._exit_pacing_lead_mode('Pacing lead placement complete')
+        else:
+            self._enter_pacing_lead_mode()
+
+    def _enter_pacing_lead_mode(self):
+        if self._board_initialized:
+            return
+        if self._electrode_mode:
+            self._exit_electrode_mode()
+        self._pacing_lead_mode = True
+        self._set_controls_for_stimulation(
+            False, allowed_buttons={self._pacing_lead_btn})
+        self._pacing_lead_btn.configure(
+            text='Done Setting Pacing Lead', state='normal')
+        self._status_var.set(
+            'Pacing lead placement mode - click one ICC block')
+        self.bind('<Escape>', self._cancel_pacing_lead_mode)
+
+    def _cancel_pacing_lead_mode(self, *_):
+        if self._pacing_lead_mode:
+            self._exit_pacing_lead_mode('Pacing lead placement cancelled')
+
+    def _exit_pacing_lead_mode(self, status_text=None):
+        self._pacing_lead_mode = False
+        self._set_controls_for_stimulation(True)
+        self._pacing_lead_btn.configure(
+            text='Set Pacing Lead',
+            state='disabled' if self._board_initialized else 'normal')
+        self.unbind('<Escape>')
+        if status_text:
+            self._status_var.set(status_text)
+
+    def _set_pacing_lead(self, row, col):
+        try:
+            rows = max(1, min(MAX_ROWS, int(self._rows_var.get())))
+            cols = max(1, min(MAX_COLS, int(self._cols_var.get())))
+        except (tk.TclError, ValueError):
+            return
+        if row >= rows or col >= cols:
+            return
+
+        if self._pacing_lead is not None:
+            old_marker = self._pacing_lead_markers.get(self._pacing_lead)
+            if old_marker is not None:
+                self._canvas.itemconfigure(old_marker, state='hidden')
+
+        self._pacing_lead = (row, col)
+        self._canvas.itemconfigure(
+            self._pacing_lead_markers[(row, col)], state='normal')
+        self._status_var.set(f'Pacing lead set at r{row} c{col}')
 
     def _open_trace_window(self, row, col):
         try:
@@ -1626,6 +1716,8 @@ class App(tk.Tk):
             self._exit_stimulation_mode()
         if self._electrode_mode:
             self._exit_electrode_mode()
+        if self._pacing_lead_mode:
+            self._exit_pacing_lead_mode()
         self._alive = False
         if self._ser:
             self._ser.close()
@@ -1639,6 +1731,7 @@ class App(tk.Tk):
         self._bytes_rx = 0
         self._board_initialized = False
         self._electrode_btn.configure(text='Set Electrodes', state='normal')
+        self._pacing_lead_btn.configure(text='Set Pacing Lead', state='normal')
         if self._egm_window and self._egm_window.winfo_exists():
             self._egm_window.update_edit_state()
 
@@ -1682,10 +1775,14 @@ class App(tk.Tk):
             for (row, col), height in self._electrodes.items()
             if row < rows and col < cols
         ]
+        pacing_lead = self._pacing_lead
+        if (pacing_lead is not None and
+                (pacing_lead[0] >= rows or pacing_lead[1] >= cols)):
+            pacing_lead = None
 
         packet = build_init_packet(
             rows, cols, step, intervals,
-            h_delays, v_delays, h_gaps, v_gaps, electrodes)
+            h_delays, v_delays, h_gaps, v_gaps, electrodes, pacing_lead)
 
         self._rows = rows
         self._cols = cols
@@ -1695,6 +1792,7 @@ class App(tk.Tk):
         self._ser.write(packet)
         self._board_initialized = True
         self._electrode_btn.configure(text='EGM Viewer', state='normal')
+        self._pacing_lead_btn.configure(state='disabled')
         self._ensure_egm_window_for_electrodes(electrodes)
         self._status_var.set(f'Running  {rows}×{cols}  step={step} ms')
 
@@ -1827,6 +1925,12 @@ class App(tk.Tk):
                 for (row, col), height in self._electrodes.items()
                 if row < rows and col < cols
             ],
+            'pacing_lead': (
+                {'row': self._pacing_lead[0], 'col': self._pacing_lead[1]}
+                if self._pacing_lead is not None and
+                self._pacing_lead[0] < rows and self._pacing_lead[1] < cols
+                else None
+            ),
         }
         try:
             with open(path, 'w') as f:
@@ -1891,10 +1995,13 @@ class App(tk.Tk):
 
         for marker in self._electrode_markers.values():
             self._canvas.itemconfigure(marker, state='hidden')
+        for marker in self._pacing_lead_markers.values():
+            self._canvas.itemconfigure(marker, state='hidden')
         if self._egm_window and self._egm_window.winfo_exists():
             self._egm_window.destroy()
             self._egm_window = None
         self._electrodes.clear()
+        self._pacing_lead = None
         for item in data.get('electrodes', []):
             try:
                 row = int(item['row'])
@@ -1906,6 +2013,18 @@ class App(tk.Tk):
                 self._electrodes[(row, col)] = height
                 self._canvas.itemconfigure(
                     self._electrode_markers[(row, col)], state='normal')
+
+        lead = data.get('pacing_lead')
+        if isinstance(lead, dict):
+            try:
+                row = int(lead['row'])
+                col = int(lead['col'])
+            except (KeyError, TypeError, ValueError):
+                row = col = -1
+            if 0 <= row < rows and 0 <= col < cols:
+                self._pacing_lead = (row, col)
+                self._canvas.itemconfigure(
+                    self._pacing_lead_markers[(row, col)], state='normal')
 
     def on_close(self):
         self._do_disconnect()

@@ -100,6 +100,10 @@ Before initialization, click **Set Electrodes**, choose the electrode height, an
 
 After initialization, the same button becomes **EGM Viewer**. Click it to reopen or raise the EGM Signals window for the configured electrodes.
 
+#### Pacing Lead
+
+Before initialization, click **Set Pacing Lead** and then click one ICC block to place the pacemaker stimulation target. This lead is separate from the EGM sensing electrodes and is locked after **Initialize Board** is pressed.
+
 ---
 
 ### Live ICC Activity Viewer
@@ -158,6 +162,9 @@ Sent when **Initialize Board** is clicked.
 | (rows−1) × cols | V-path gaps in mm (uint8 each), omitted if rows = 1 |
 | 1 | electrode count (uint8) |
 | electrode count × 3 | electrode row, column, and height in mm (uint8 each) |
+| 1 | pacing lead enabled (uint8, 0 or 1) |
+| 1 | pacing lead row (uint8) |
+| 1 | pacing lead column (uint8) |
 
 ### Telemetry packet (board → PC)
 
@@ -201,7 +208,8 @@ Settings are stored as JSON:
   "v_gaps": [[6, ...], ...],
   "electrodes": [
     {"row": 0, "col": 2, "height_mm": 1}
-  ]
+  ],
+  "pacing_lead": {"row": 0, "col": 2}
 }
 ```
 

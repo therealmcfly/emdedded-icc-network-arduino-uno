@@ -124,6 +124,9 @@ Each path has a `PathDipole` that is active while propagation is travelling acro
 | (rows−1) × cols | V-path gaps in mm (uint8 each), omitted if rows = 1 |
 | 1 | electrode count (uint8) |
 | electrode count × 3 | electrode row, column, and height in mm (uint8 each) |
+| 1 | pacing lead enabled (uint8, 0 or 1) |
+| 1 | pacing lead row (uint8) |
+| 1 | pacing lead column (uint8) |
 
 ### Telemetry packet (board → PC)
 
@@ -144,6 +147,8 @@ Sent every timestep on Mega `Serial1` at 115200 baud. `Serial1` uses TX1 pin 18 
 | Bytes | Field |
 |---|---|
 | 2 | EGM sample (int16 LE, electrode 0 potential x 1000) |
+
+Incoming pacemaker pacing bytes are read from `Serial1` RX1. A byte value of `1` stimulates the configured pacing lead location from the init packet.
 
 ---
 
