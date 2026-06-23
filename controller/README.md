@@ -96,13 +96,17 @@ Physical spacing for each horizontal and vertical path. The **All H-paths / All 
 
 #### Electrodes
 
-Before initialization, click **Set Electrodes**, choose the electrode height, and click ICC blocks to place electrodes. The EGM Signals window opens with one trace per electrode. Electrodes can be removed before initialization; their configuration is locked after **Initialize Board** is pressed.
+Before initialization, click **Set Electrodes**, choose the electrode height, and click ICC blocks to place electrodes for EGM viewing and recording. The EGM Signals window opens with one trace per electrode. Electrodes can be removed before initialization; their configuration is locked after **Initialize Board** is pressed.
 
 After initialization, the same button becomes **EGM Viewer**. Click it to reopen or raise the EGM Signals window for the configured electrodes.
 
+#### GES Sensing Electrode
+
+Before initialization, click **Set GES Sensing Electrode** and then click one existing electrode marker. This selects which configured electrode is sent to the external GES pacemaker over `Serial1`. The button is disabled until at least one electrode has been placed. Click the selected sensing electrode again to clear it; clearing it also clears the pacing lead after confirmation. The selected sensing electrode is locked after **Initialize Board** is pressed.
+
 #### Pacing Lead
 
-Before initialization, click **Set Pacing Lead** and then click one ICC block to place the pacemaker stimulation target. This lead is separate from the EGM sensing electrodes and is locked after **Initialize Board** is pressed.
+Before initialization, click **Set Pacing Lead** and then click one ICC block to place the pacemaker stimulation target. The button is disabled until a GES sensing electrode has been selected. Click the selected pacing lead again to clear it. The pacing lead is locked after **Initialize Board** is pressed.
 
 ---
 
@@ -162,6 +166,8 @@ Sent when **Initialize Board** is clicked.
 | (rows−1) × cols | V-path gaps in mm (uint8 each), omitted if rows = 1 |
 | 1 | electrode count (uint8) |
 | electrode count × 3 | electrode row, column, and height in mm (uint8 each) |
+| 1 | GES sensing electrode enabled (uint8, 0 or 1) |
+| 1 | GES sensing electrode index (uint8, into electrode list) |
 | 1 | pacing lead enabled (uint8, 0 or 1) |
 | 1 | pacing lead row (uint8) |
 | 1 | pacing lead column (uint8) |
@@ -209,6 +215,7 @@ Settings are stored as JSON:
   "electrodes": [
     {"row": 0, "col": 2, "height_mm": 1}
   ],
+  "ges_sensing_electrode": {"row": 0, "col": 2},
   "pacing_lead": {"row": 0, "col": 2}
 }
 ```

@@ -43,6 +43,8 @@ uint32_t time_step_ms = DEFAULT_TIME_STEP_MS;
 
 static Electrode electrodes[MAX_ELECTRODE_COUNT];
 static uint8_t electrode_count = 0U;
+static bool ges_sensing_enabled = false;
+static uint8_t ges_sensing_electrode_index = 0U;
 static bool pacing_lead_enabled = false;
 static uint8_t pacing_lead_row = 0U;
 static uint8_t pacing_lead_col = 0U;
@@ -338,9 +340,10 @@ static void send_telemetry_packet()
 static void send_pacemaker_egm_packet()
 {
 	float egm = 0.0f;
-	if (electrode_count > 0U)
+	if (ges_sensing_enabled &&
+			ges_sensing_electrode_index < electrode_count)
 	{
-		egm = electrodes[0].potential;
+		egm = electrodes[ges_sensing_electrode_index].potential;
 	}
 
 	float scaled = egm * kPacemakerEgmGain;
@@ -493,7 +496,7 @@ void setup()
 	// horizontal delays, then (if rows>1) (rows-1)*cols uint16 LE vertical delays,
 	// followed by matching uint8 H-path and V-path gaps in millimetres,
 	// then electrode_count and row/column/height bytes for each electrode,
-	// then pacing-lead enabled/row/column bytes.
+	// then GES-sensing enabled/index bytes, then pacing-lead enabled/row/column bytes.
 	{
 		uint8_t b = 0;
 
@@ -628,6 +631,17 @@ void setup()
 			{
 				electrode_init(&electrodes[i], row, col, height_mm);
 			}
+		}
+
+		while (Serial.available() == 0)
+			;
+		ges_sensing_enabled = ((uint8_t)Serial.read()) != 0U;
+		while (Serial.available() == 0)
+			;
+		ges_sensing_electrode_index = (uint8_t)Serial.read();
+		if (ges_sensing_electrode_index >= electrode_count)
+		{
+			ges_sensing_enabled = false;
 		}
 
 		while (Serial.available() == 0)

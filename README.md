@@ -124,6 +124,8 @@ Each path has a `PathDipole` that is active while propagation is travelling acro
 | (rows−1) × cols | V-path gaps in mm (uint8 each), omitted if rows = 1 |
 | 1 | electrode count (uint8) |
 | electrode count × 3 | electrode row, column, and height in mm (uint8 each) |
+| 1 | GES sensing electrode enabled (uint8, 0 or 1) |
+| 1 | GES sensing electrode index (uint8, into electrode list) |
 | 1 | pacing lead enabled (uint8, 0 or 1) |
 | 1 | pacing lead row (uint8) |
 | 1 | pacing lead column (uint8) |
@@ -142,11 +144,11 @@ A cell voltage of exactly `0.0` indicates the WAIT state.
 
 ### Pacemaker EGM sample (board to pacemaker, Serial1)
 
-Sent every timestep on Mega `Serial1` at 115200 baud. `Serial1` uses TX1 pin 18 and RX1 pin 19; the current firmware writes this sample to TX1. The sample is the first configured electrode potential multiplied by 1000, clamped to `int16_t`, and sent little-endian.
+Sent every timestep on Mega `Serial1` at 115200 baud. `Serial1` uses TX1 pin 18 and RX1 pin 19; the current firmware writes this sample to TX1. The sample is the configured GES sensing electrode potential multiplied by 1000, clamped to `int16_t`, and sent little-endian.
 
 | Bytes | Field |
 |---|---|
-| 2 | EGM sample (int16 LE, electrode 0 potential x 1000) |
+| 2 | EGM sample (int16 LE, GES sensing electrode potential x 1000) |
 
 Incoming pacemaker pacing bytes are read from `Serial1` RX1. A byte value of `1` stimulates the configured pacing lead location from the init packet.
 

@@ -77,13 +77,15 @@ THEMES = {
 
 def build_init_packet(
         rows, cols, step_ms, intervals,
-        h_delays, v_delays, h_gaps, v_gaps, electrodes, pacing_lead=None):
+        h_delays, v_delays, h_gaps, v_gaps, electrodes,
+        ges_sensing_electrode=None, pacing_lead=None):
     """Pack the ICCF init packet.
     h_delays: list[rows][cols-1] of ms values (ignored when cols==1)
     v_delays: list[rows-1][cols] of ms values (ignored when rows==1)
     h_gaps: list[rows][cols-1] of mm values (ignored when cols==1)
     v_gaps: list[rows-1][cols] of mm values (ignored when rows==1)
     electrodes: list of (row, col, height_mm)
+    ges_sensing_electrode: optional (row, col) selected from electrodes
     pacing_lead: optional (row, col) for pacemaker-triggered stimulation
     """
     buf = bytearray(INIT_HEADER)
@@ -110,8 +112,14 @@ def build_init_packet(
             for c in range(cols):
                 buf += struct.pack('<B', v_gaps[r][c])
     buf += struct.pack('<B', len(electrodes))
-    for row, col, height_mm in electrodes:
+    sensing_index = 0
+    sensing_enabled = 0
+    for index, (row, col, height_mm) in enumerate(electrodes):
         buf += struct.pack('<BBB', row, col, height_mm)
+        if ges_sensing_electrode == (row, col):
+            sensing_index = index
+            sensing_enabled = 1
+    buf += struct.pack('<BB', sensing_enabled, sensing_index)
     if pacing_lead is None:
         buf += struct.pack('<BBB', 0, 0, 0)
     else:
@@ -257,6 +265,9 @@ class IccSignalWindow(tk.Toplevel):
         title = tk.Label(header, text='', anchor='w',
                          bg=self._theme['bg'], fg=self._theme['fg'])
         title.pack(side='left')
+        badges = tk.Canvas(header, width=44, height=18,
+                           bg=self._theme['bg'], highlightthickness=0)
+        badges.pack(side='left', padx=(4, 0))
         current = tk.Label(header, text='--.- mV', anchor='e',
                            bg=self._theme['bg'], fg=self._theme['pkt_fg'],
                            font=('Consolas', 10))
@@ -269,13 +280,14 @@ class IccSignalWindow(tk.Toplevel):
             'frame': frame,
             'header': header,
             'title': title,
+            'badges': badges,
             'current': current,
             'canvas': canvas,
             'values': [],
         }
         self._charts[key] = chart
         self._update_chart_title(key)
-        for widget in (frame, header, title, current, canvas):
+        for widget in (frame, header, title, badges, current, canvas):
             widget.bind('<Button-1>', lambda _e, k=key: self.select_trace(k))
             widget.bind('<MouseWheel>', self._on_mousewheel)
         canvas.bind('<Configure>', lambda _e, k=key: self._draw_chart(k))
@@ -459,6 +471,8 @@ class IccSignalWindow(tk.Toplevel):
         chart['frame'].configure(bg=self._theme['bg'], highlightbackground=border,
                                  highlightcolor=border)
         chart['header'].configure(bg=self._theme['bg'])
+        if 'badges' in chart:
+            chart['badges'].configure(bg=self._theme['bg'])
         title_fg = '#d32f2f' if self._is_deactivated(key) else self._theme['fg']
         chart['title'].configure(bg=self._theme['bg'], fg=title_fg)
         chart['current'].configure(bg=self._theme['bg'], fg=self._theme['pkt_fg'])
@@ -587,10 +601,31 @@ class EgmSignalWindow(IccSignalWindow):
         if key not in self._charts:
             return
         row, col = key
-        height = self._app._electrodes.get(key, 0)
         self._charts[key]['title'].configure(
-            text=f'Electrode r{row} c{col}, height {height} mm')
+            text=f'Electrode Row {row}, Column {col}')
+        self._draw_role_badges(key)
         self._style_chart(key)
+
+    def _draw_role_badges(self, key):
+        chart = self._charts.get(key)
+        if not chart or 'badges' not in chart:
+            return
+        badges = chart['badges']
+        badges.delete('all')
+        x = 2
+        y = 9
+        if self._app._ges_sensing_electrode == key:
+            badges.create_rectangle(
+                x, y - 6, x + 12, y + 6,
+                fill='#16a34a', outline='white', width=1)
+            x += 18
+        if self._app._pacing_lead == key:
+            badges.create_polygon(
+                x + 6, y - 7,
+                x + 13, y,
+                x + 6, y + 7,
+                x - 1, y,
+                fill='#d97706', outline='white', width=1)
 
     def _update_empty_state(self):
         count = len(self._charts)
@@ -677,9 +712,11 @@ class App(tk.Tk):
         self._egm_window = None
         self._stim_mode = False
         self._electrode_mode = False
+        self._ges_sensing_mode = False
         self._pacing_lead_mode = False
         self._board_initialized = False
         self._electrodes = {}
+        self._ges_sensing_electrode = None
         self._pacing_lead = None
         self._stim_disabled_widgets = []
 
@@ -1271,6 +1308,7 @@ class App(tk.Tk):
                 iter(self._egm_window._charts), None)
             self._egm_window._update_empty_state()
             self._egm_window.update_edit_state()
+        self._update_ges_controls_state()
 
     def _fit_left_panel(self):
         self.update_idletasks()
@@ -1317,9 +1355,13 @@ class App(tk.Tk):
             electrode_row, from_=0, to=255, increment=1,
             textvariable=self._electrode_height_var, width=4)
         self._electrode_height_spin.pack(side='left')
+        self._ges_sensing_btn = ttk.Button(
+            mode_controls, text='Set GES Sensing Electrode',
+            command=self._toggle_ges_sensing_mode, state='disabled')
+        self._ges_sensing_btn.pack(fill='x', pady=(4, 0))
         self._pacing_lead_btn = ttk.Button(
             mode_controls, text='Set Pacing Lead',
-            command=self._toggle_pacing_lead_mode)
+            command=self._toggle_pacing_lead_mode, state='disabled')
         self._pacing_lead_btn.pack(fill='x', pady=(4, 0))
 
         cw = LABEL_PX + MAX_COLS * CELL_PX
@@ -1332,6 +1374,7 @@ class App(tk.Tk):
         self._cells = {}
         self._ctexts = {}
         self._electrode_markers = {}
+        self._ges_sensing_markers = {}
         self._pacing_lead_markers = {}
         self._col_label_ids = []
         self._row_label_ids = []
@@ -1367,6 +1410,12 @@ class App(tk.Tk):
                     fill='#0067c0', outline='white', width=1,
                     state='hidden')
                 self._electrode_markers[(r, c)] = marker
+                sensing_marker = self._canvas.create_rectangle(
+                    x0 + CELL_PX - 17, y0 + CELL_PX - 17,
+                    x0 + CELL_PX - 5, y0 + CELL_PX - 5,
+                    fill='#16a34a', outline='white', width=1,
+                    state='hidden')
+                self._ges_sensing_markers[(r, c)] = sensing_marker
                 lead_marker = self._canvas.create_polygon(
                     x0 + 9, y0 + 3,
                     x0 + 15, y0 + 9,
@@ -1383,6 +1432,9 @@ class App(tk.Tk):
                     lambda _e, row=r, col=c: self._on_live_cell_click(row, col))
                 self._canvas.tag_bind(
                     marker, '<Button-1>',
+                    lambda _e, row=r, col=c: self._on_live_cell_click(row, col))
+                self._canvas.tag_bind(
+                    sensing_marker, '<Button-1>',
                     lambda _e, row=r, col=c: self._on_live_cell_click(row, col))
                 self._canvas.tag_bind(
                     lead_marker, '<Button-1>',
@@ -1418,6 +1470,8 @@ class App(tk.Tk):
     def _on_live_cell_click(self, row, col):
         if self._electrode_mode:
             self._set_electrode(row, col)
+        elif self._ges_sensing_mode:
+            self._set_ges_sensing_electrode(row, col)
         elif self._pacing_lead_mode:
             self._set_pacing_lead(row, col)
         elif self._stim_mode:
@@ -1439,6 +1493,8 @@ class App(tk.Tk):
             return
         if self._pacing_lead_mode:
             self._exit_pacing_lead_mode()
+        if self._ges_sensing_mode:
+            self._exit_ges_sensing_mode()
         self._electrode_mode = True
         allowed = {self._electrode_btn, self._electrode_height_spin}
         if self._egm_window and self._egm_window.winfo_exists():
@@ -1462,6 +1518,7 @@ class App(tk.Tk):
         self._electrode_btn.configure(
             text='EGM Viewer' if self._board_initialized else 'Set Electrodes',
             state='normal')
+        self._update_ges_controls_state()
         self.unbind('<Escape>')
         if status_text:
             self._status_var.set(status_text)
@@ -1477,6 +1534,10 @@ class App(tk.Tk):
             return
 
         key = (row, col)
+        if key in self._electrodes:
+            self._deselect_electrode(key)
+            return
+
         self._electrodes[key] = height_mm
         self._canvas.itemconfigure(
             self._electrode_markers[key], state='normal')
@@ -1486,6 +1547,7 @@ class App(tk.Tk):
             if erow < rows and ecol < cols
         ]
         self._ensure_egm_window_for_electrodes(electrodes)
+        self._update_ges_controls_state()
         if self._egm_window and self._egm_window.winfo_exists():
             self._egm_window.select_trace(key)
         self._status_var.set(
@@ -1513,14 +1575,165 @@ class App(tk.Tk):
             return
         self._ensure_egm_window_for_electrodes(electrodes)
 
-    def _remove_electrode(self, key):
+    def _clear_pacing_lead(self):
+        if self._pacing_lead is None:
+            return
+        marker = self._pacing_lead_markers.get(self._pacing_lead)
+        if marker is not None:
+            self._canvas.itemconfigure(marker, state='hidden')
+        self._pacing_lead = None
+        self._refresh_egm_chart_titles()
+
+    def _clear_ges_sensing_electrode(self):
+        if self._ges_sensing_electrode is None:
+            return
+        marker = self._ges_sensing_markers.get(self._ges_sensing_electrode)
+        if marker is not None:
+            self._canvas.itemconfigure(marker, state='hidden')
+        self._ges_sensing_electrode = None
+        self._refresh_egm_chart_titles()
+
+    def _confirm_remove_sensing_electrode(self, title):
+        if self._pacing_lead is None:
+            message = (
+                'Removing this electrode will also clear the GES sensing electrode. '
+                'Continue?')
+        else:
+            message = (
+                'Removing this electrode will also clear the GES sensing electrode '
+                'and the pacing lead. Continue?')
+        return messagebox.askyesno(title, message)
+
+    def _confirm_clear_sensing_and_pacing(self, title):
+        if self._pacing_lead is None:
+            return messagebox.askyesno(
+                title,
+                'Clearing the GES sensing electrode. Continue?')
+        return messagebox.askyesno(
+            title,
+            'Clearing the GES sensing electrode will also clear the pacing lead. Continue?')
+
+    def _deselect_electrode(self, key):
+        removing_last = len(self._electrodes) == 1
+        removing_sensing = self._ges_sensing_electrode == key
+
+        if removing_sensing and not self._confirm_remove_sensing_electrode(
+                'Remove Sensing Electrode'):
+            return
+        if (removing_last and not removing_sensing and self._pacing_lead is not None and
+                not messagebox.askyesno(
+                    'Remove Last Electrode',
+                    'Removing the last electrode will also clear the pacing lead. Continue?')):
+            return
+
         self._electrodes.pop(key, None)
         marker = self._electrode_markers.get(key)
         if marker is not None:
             self._canvas.itemconfigure(marker, state='hidden')
+        if self._egm_window and self._egm_window.winfo_exists():
+            chart = self._egm_window._charts.pop(key, None)
+            if chart:
+                chart['frame'].destroy()
+            self._egm_window._selected = next(
+                iter(self._egm_window._charts), None)
+            self._egm_window._update_empty_state()
+            self._egm_window.update_edit_state()
+        if removing_sensing:
+            self._clear_ges_sensing_electrode()
+            self._clear_pacing_lead()
+        elif removing_last:
+            self._clear_pacing_lead()
+        self._update_ges_controls_state()
+        self._status_var.set(f'Electrode removed at r{key[0]} c{key[1]}')
+
+    def _remove_electrode(self, key):
+        self._deselect_electrode(key)
+
+    def _refresh_egm_chart_titles(self):
+        if self._egm_window and self._egm_window.winfo_exists():
+            for key in list(self._egm_window._charts):
+                self._egm_window._update_chart_title(key)
+
+    def _update_ges_controls_state(self):
+        has_electrodes = bool(self._electrodes)
+        has_sensing = self._ges_sensing_electrode is not None
+        sensing_state = (
+            'disabled' if self._board_initialized or not has_electrodes
+            else 'normal')
+        pacing_state = (
+            'disabled' if self._board_initialized or not has_sensing
+            else 'normal')
+        if not self._ges_sensing_mode:
+            self._ges_sensing_btn.configure(
+                text='Set GES Sensing Electrode', state=sensing_state)
+        if not self._pacing_lead_mode:
+            self._pacing_lead_btn.configure(
+                text='Set Pacing Lead', state=pacing_state)
+
+    def _toggle_ges_sensing_mode(self):
+        if self._board_initialized or not self._electrodes:
+            return
+        if self._ges_sensing_mode:
+            self._exit_ges_sensing_mode('GES sensing electrode placement complete')
+        else:
+            self._enter_ges_sensing_mode()
+
+    def _enter_ges_sensing_mode(self):
+        if self._board_initialized or not self._electrodes:
+            return
+        if self._electrode_mode:
+            self._exit_electrode_mode()
+        if self._pacing_lead_mode:
+            self._exit_pacing_lead_mode()
+        self._ges_sensing_mode = True
+        self._set_controls_for_stimulation(
+            False, allowed_buttons={self._ges_sensing_btn})
+        self._ges_sensing_btn.configure(
+            text='Done Setting GES Sensing Electrode', state='normal')
+        self._status_var.set(
+            'GES sensing mode - click one existing electrode')
+        self.bind('<Escape>', self._cancel_ges_sensing_mode)
+
+    def _cancel_ges_sensing_mode(self, *_):
+        if self._ges_sensing_mode:
+            self._exit_ges_sensing_mode('GES sensing electrode placement cancelled')
+
+    def _exit_ges_sensing_mode(self, status_text=None):
+        self._ges_sensing_mode = False
+        self._set_controls_for_stimulation(True)
+        self._update_ges_controls_state()
+        self.unbind('<Escape>')
+        if status_text:
+            self._status_var.set(status_text)
+
+    def _set_ges_sensing_electrode(self, row, col):
+        key = (row, col)
+        if key not in self._electrodes:
+            self._status_var.set('GES sensing electrode must be an existing electrode')
+            return
+        if self._ges_sensing_electrode == key:
+            if self._pacing_lead is not None and not messagebox.askyesno(
+                    'Clear GES Sensing Electrode',
+                    'Clearing the GES sensing electrode will also clear the pacing lead. Continue?'):
+                return
+            self._clear_ges_sensing_electrode()
+            self._clear_pacing_lead()
+            self._update_ges_controls_state()
+            self._status_var.set('GES sensing electrode cleared')
+            return
+        if self._ges_sensing_electrode is not None:
+            old_marker = self._ges_sensing_markers.get(self._ges_sensing_electrode)
+            if old_marker is not None:
+                self._canvas.itemconfigure(old_marker, state='hidden')
+        self._ges_sensing_electrode = key
+        self._canvas.itemconfigure(
+            self._ges_sensing_markers[key], state='normal')
+        self._update_ges_controls_state()
+        self._refresh_egm_chart_titles()
+        self._status_var.set(f'GES sensing electrode set at r{row} c{col}')
 
     def _toggle_pacing_lead_mode(self):
-        if self._board_initialized:
+        if self._board_initialized or self._ges_sensing_electrode is None:
             return
         if self._pacing_lead_mode:
             self._exit_pacing_lead_mode('Pacing lead placement complete')
@@ -1528,10 +1741,12 @@ class App(tk.Tk):
             self._enter_pacing_lead_mode()
 
     def _enter_pacing_lead_mode(self):
-        if self._board_initialized:
+        if self._board_initialized or self._ges_sensing_electrode is None:
             return
         if self._electrode_mode:
             self._exit_electrode_mode()
+        if self._ges_sensing_mode:
+            self._exit_ges_sensing_mode()
         self._pacing_lead_mode = True
         self._set_controls_for_stimulation(
             False, allowed_buttons={self._pacing_lead_btn})
@@ -1548,9 +1763,7 @@ class App(tk.Tk):
     def _exit_pacing_lead_mode(self, status_text=None):
         self._pacing_lead_mode = False
         self._set_controls_for_stimulation(True)
-        self._pacing_lead_btn.configure(
-            text='Set Pacing Lead',
-            state='disabled' if self._board_initialized else 'normal')
+        self._update_ges_controls_state()
         self.unbind('<Escape>')
         if status_text:
             self._status_var.set(status_text)
@@ -1564,14 +1777,20 @@ class App(tk.Tk):
         if row >= rows or col >= cols:
             return
 
-        if self._pacing_lead is not None:
-            old_marker = self._pacing_lead_markers.get(self._pacing_lead)
-            if old_marker is not None:
-                self._canvas.itemconfigure(old_marker, state='hidden')
+        key = (row, col)
+        if self._pacing_lead == key:
+            self._clear_pacing_lead()
+            self._update_ges_controls_state()
+            self._status_var.set('Pacing lead cleared')
+            return
 
-        self._pacing_lead = (row, col)
+        if self._pacing_lead is not None:
+            self._clear_pacing_lead()
+
+        self._pacing_lead = key
         self._canvas.itemconfigure(
-            self._pacing_lead_markers[(row, col)], state='normal')
+            self._pacing_lead_markers[key], state='normal')
+        self._refresh_egm_chart_titles()
         self._status_var.set(f'Pacing lead set at r{row} c{col}')
 
     def _open_trace_window(self, row, col):
@@ -1716,6 +1935,8 @@ class App(tk.Tk):
             self._exit_stimulation_mode()
         if self._electrode_mode:
             self._exit_electrode_mode()
+        if self._ges_sensing_mode:
+            self._exit_ges_sensing_mode()
         if self._pacing_lead_mode:
             self._exit_pacing_lead_mode()
         self._alive = False
@@ -1731,7 +1952,7 @@ class App(tk.Tk):
         self._bytes_rx = 0
         self._board_initialized = False
         self._electrode_btn.configure(text='Set Electrodes', state='normal')
-        self._pacing_lead_btn.configure(text='Set Pacing Lead', state='normal')
+        self._update_ges_controls_state()
         if self._egm_window and self._egm_window.winfo_exists():
             self._egm_window.update_edit_state()
 
@@ -1775,6 +1996,13 @@ class App(tk.Tk):
             for (row, col), height in self._electrodes.items()
             if row < rows and col < cols
         ]
+        if electrodes and self._ges_sensing_electrode not in [
+                (row, col) for row, col, _height in electrodes]:
+            messagebox.showerror(
+                'GES sensing electrode required',
+                'Set one of the configured electrodes as the GES sensing electrode.')
+            return
+
         pacing_lead = self._pacing_lead
         if (pacing_lead is not None and
                 (pacing_lead[0] >= rows or pacing_lead[1] >= cols)):
@@ -1782,7 +2010,8 @@ class App(tk.Tk):
 
         packet = build_init_packet(
             rows, cols, step, intervals,
-            h_delays, v_delays, h_gaps, v_gaps, electrodes, pacing_lead)
+            h_delays, v_delays, h_gaps, v_gaps, electrodes,
+            self._ges_sensing_electrode, pacing_lead)
 
         self._rows = rows
         self._cols = cols
@@ -1792,6 +2021,7 @@ class App(tk.Tk):
         self._ser.write(packet)
         self._board_initialized = True
         self._electrode_btn.configure(text='EGM Viewer', state='normal')
+        self._ges_sensing_btn.configure(state='disabled')
         self._pacing_lead_btn.configure(state='disabled')
         self._ensure_egm_window_for_electrodes(electrodes)
         self._status_var.set(f'Running  {rows}×{cols}  step={step} ms')
@@ -1925,6 +2155,14 @@ class App(tk.Tk):
                 for (row, col), height in self._electrodes.items()
                 if row < rows and col < cols
             ],
+            'ges_sensing_electrode': (
+                {'row': self._ges_sensing_electrode[0],
+                 'col': self._ges_sensing_electrode[1]}
+                if self._ges_sensing_electrode is not None and
+                self._ges_sensing_electrode[0] < rows and
+                self._ges_sensing_electrode[1] < cols
+                else None
+            ),
             'pacing_lead': (
                 {'row': self._pacing_lead[0], 'col': self._pacing_lead[1]}
                 if self._pacing_lead is not None and
@@ -1995,12 +2233,15 @@ class App(tk.Tk):
 
         for marker in self._electrode_markers.values():
             self._canvas.itemconfigure(marker, state='hidden')
+        for marker in self._ges_sensing_markers.values():
+            self._canvas.itemconfigure(marker, state='hidden')
         for marker in self._pacing_lead_markers.values():
             self._canvas.itemconfigure(marker, state='hidden')
         if self._egm_window and self._egm_window.winfo_exists():
             self._egm_window.destroy()
             self._egm_window = None
         self._electrodes.clear()
+        self._ges_sensing_electrode = None
         self._pacing_lead = None
         for item in data.get('electrodes', []):
             try:
@@ -2014,6 +2255,18 @@ class App(tk.Tk):
                 self._canvas.itemconfigure(
                     self._electrode_markers[(row, col)], state='normal')
 
+        sensing = data.get('ges_sensing_electrode')
+        if isinstance(sensing, dict):
+            try:
+                row = int(sensing['row'])
+                col = int(sensing['col'])
+            except (KeyError, TypeError, ValueError):
+                row = col = -1
+            if (row, col) in self._electrodes:
+                self._ges_sensing_electrode = (row, col)
+                self._canvas.itemconfigure(
+                    self._ges_sensing_markers[(row, col)], state='normal')
+
         lead = data.get('pacing_lead')
         if isinstance(lead, dict):
             try:
@@ -2025,6 +2278,8 @@ class App(tk.Tk):
                 self._pacing_lead = (row, col)
                 self._canvas.itemconfigure(
                     self._pacing_lead_markers[(row, col)], state='normal')
+        self._update_ges_controls_state()
+        self._refresh_egm_chart_titles()
 
     def on_close(self):
         self._do_disconnect()
