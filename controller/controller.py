@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """ICC Board Controller — connect, configure, and visualize an ICC network."""
 
+import csv
+import datetime as dt
 import json
+import math
+import os
+import re
 import struct
+import sys
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox, colorchooser, filedialog
+from tkinter import ttk, messagebox, colorchooser, filedialog, simpledialog
 
 import serial
 import serial.tools.list_ports
@@ -127,6 +133,22 @@ def build_init_packet(
         buf += struct.pack('<BBB', 1, row, col)
     return bytes(buf)
 
+
+
+
+def app_base_dir():
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def default_recordings_dir():
+    return os.path.join(app_base_dir(), 'recordings')
+
+
+def sanitize_filename_part(value):
+    value = re.sub(r'[^A-Za-z0-9._-]+', '_', value.strip())
+    return value.strip('._') or 'recording'
 
 def clamp_timestep_ms(value):
     return max(TIMESTEP_MIN_MS, min(TIMESTEP_MAX_MS, int(value)))
@@ -317,6 +339,16 @@ class IccSignalWindow(tk.Toplevel):
             self._style_chart(key)
         self._update_empty_state()
         self.after_idle(self._fit_to_charts)
+
+    def clear_samples(self):
+        for key, chart in self._charts.items():
+            chart['values'].clear()
+            chart['current'].configure(text='--.- mV')
+            self._draw_chart(key)
+        self._follow_live = True
+        self._history_anchor_index = None
+        self._set_history_offset(0.0)
+        self._update_history_scroll()
 
     def add_samples(self, rows, cols, voltages):
         changed_keys = []
@@ -585,8 +617,19 @@ class IccSignalWindow(tk.Toplevel):
 class EgmSignalWindow(IccSignalWindow):
     def __init__(self, app):
         super().__init__(app)
+        self._remove_btn.pack_forget()
         self.title('EGM Signals')
         self._title_var.set('Set electrodes on ICC blocks to add EGM traces')
+        self._recording_var = tk.StringVar(value='')
+        self._recording_lbl = ttk.Label(
+            self._title_lbl.master, textvariable=self._recording_var,
+            foreground='#d32f2f')
+        self._recording_lbl.pack(side='left', padx=(8, 0))
+        self._stop_recording_btn = ttk.Button(
+            self._title_lbl.master, text='\u25a0 REC', width=7,
+            command=self._app.stop_recording, state='disabled')
+        self._stop_recording_btn.pack(side='left', padx=(8, 0))
+        self.update_recording_state()
         self.update_edit_state()
 
     def _on_close(self):
@@ -675,6 +718,11 @@ class EgmSignalWindow(IccSignalWindow):
         super().select_trace(key)
         self.update_edit_state()
 
+    def update_recording_state(self):
+        active = self._app._recording_active
+        self._recording_var.set(self._app._recording_status_text())
+        self._stop_recording_btn.configure(state='normal' if active else 'disabled')
+
 
 class App(tk.Tk):
     def __init__(self):
@@ -718,6 +766,18 @@ class App(tk.Tk):
         self._electrodes = {}
         self._ges_sensing_electrode = None
         self._pacing_lead = None
+        self._recording_active = False
+        self._recording_file = None
+        self._recording_writer = None
+        self._recording_path = None
+        self._recording_filename_prefix = None
+        self._recording_sample_index = 0
+        self._recording_electrodes = []
+        self._recording_step_ms = 0
+        self._recording_duration_s = None
+        self._recording_max_samples = None
+        self._last_recording_name = 'egm_recording'
+        self._last_recording_duration_s = None
         self._stim_disabled_widgets = []
 
         self._paned = ttk.PanedWindow(self, orient='horizontal')
@@ -1446,6 +1506,14 @@ class App(tk.Tk):
         self._status_lbl = ttk.Label(bar, textvariable=self._status_var,
                                       foreground=self._theme['status_fg'])
         self._status_lbl.pack(side='left')
+        self._recording_var = tk.StringVar(value='')
+        self._recording_lbl = ttk.Label(
+            bar, textvariable=self._recording_var, foreground='#d32f2f')
+        self._recording_lbl.pack(side='left', padx=(8, 0))
+        self._stop_recording_btn = ttk.Button(
+            bar, text='\u25a0 REC', width=7, command=self.stop_recording,
+            state='disabled')
+        self._stop_recording_btn.pack(side='left', padx=(8, 0))
         self._pkt_var = tk.StringVar(value='')
         self._pkt_lbl = ttk.Label(bar, textvariable=self._pkt_var,
                                    foreground=self._theme['pkt_fg'])
@@ -1887,6 +1955,193 @@ class App(tk.Tk):
 
     # ── serial ────────────────────────────────────────────────────────────────
 
+    def _format_recording_seconds(self, seconds):
+        if seconds is None:
+            return ''
+        if abs(seconds - round(seconds)) < 0.05:
+            return f'{int(round(seconds))}s'
+        return f'{seconds:.1f}s'
+
+    def _format_duration_for_filename(self, seconds):
+        if seconds is None:
+            return ''
+        if abs(seconds - round(seconds)) < 0.001:
+            return f'{int(round(seconds))}secs'
+        return f'{seconds:.2f}secs'.replace('.', 'p')
+
+    def _unique_recording_path(self, folder, filename, exclude_path=None):
+        path = os.path.join(folder, filename)
+        if exclude_path and os.path.abspath(path) == os.path.abspath(exclude_path):
+            return path
+        if not os.path.exists(path):
+            return path
+        stem, ext = os.path.splitext(filename)
+        stamp = dt.datetime.now().strftime('%Y%m%d_%H%M%S')
+        return os.path.join(folder, f'{stem}_{stamp}{ext}')
+
+    def _recording_elapsed_s(self):
+        if self._recording_step_ms <= 0:
+            return 0.0
+        return (self._recording_sample_index * self._recording_step_ms) / 1000.0
+
+    def _recording_status_text(self):
+        if not self._recording_active:
+            return ''
+        elapsed = self._format_recording_seconds(self._recording_elapsed_s())
+        if self._recording_duration_s is None:
+            return f'[REC] {elapsed}'
+        total = self._format_recording_seconds(self._recording_duration_s)
+        return f'[REC] {elapsed} / {total}'
+
+    def _update_recording_indicators(self):
+        text = self._recording_status_text()
+        state = 'normal' if self._recording_active else 'disabled'
+        if hasattr(self, '_recording_var'):
+            self._recording_var.set(text)
+        if hasattr(self, '_stop_recording_btn'):
+            self._stop_recording_btn.configure(state=state)
+        if self._egm_window and self._egm_window.winfo_exists():
+            self._egm_window.update_recording_state()
+
+    def _recording_frequency_hz(self, step_ms):
+        if step_ms <= 0:
+            return 0.0
+        return 1000.0 / float(step_ms)
+
+    def _format_frequency_for_filename(self, hz):
+        if abs(hz - round(hz)) < 0.001:
+            return f'{int(round(hz))}hz'
+        return f'{hz:.2f}hz'.replace('.', 'p')
+
+    def _prompt_recording_config(self, electrodes, step_ms):
+        if not electrodes:
+            return None
+        if not messagebox.askyesno(
+                'Record EGM Signals',
+                'Record EGM signals from the configured electrodes?'):
+            return None
+        name = simpledialog.askstring(
+            'Recording Name',
+            'Enter recording name:',
+            parent=self,
+            initialvalue=self._last_recording_name)
+        if name is None:
+            return None
+        duration_s = None
+        if messagebox.askyesno(
+                'Recording Duration',
+                'Set a fixed recording duration?'):
+            duration_s = simpledialog.askfloat(
+                'Recording Duration',
+                'Recording duration in seconds:',
+                parent=self,
+                initialvalue=self._last_recording_duration_s,
+                minvalue=0.001)
+            if duration_s is None:
+                return None
+        self._last_recording_name = name
+        if duration_s is not None:
+            self._last_recording_duration_s = duration_s
+        clean_name = sanitize_filename_part(name)
+        hz_text = self._format_frequency_for_filename(
+            self._recording_frequency_hz(step_ms))
+        filename_prefix = f'{clean_name}_{len(electrodes)}sig_{hz_text}'
+        duration_text = ''
+        if duration_s is not None:
+            duration_text = f'_{self._format_duration_for_filename(duration_s)}'
+        filename = f'{filename_prefix}{duration_text}.csv'
+        folder = default_recordings_dir()
+        return name, folder, filename, filename_prefix, duration_s
+
+    def _start_recording(
+            self, name, folder, filename, filename_prefix, electrodes, step_ms,
+            duration_s=None):
+        self.stop_recording(show_status=False)
+        os.makedirs(folder, exist_ok=True)
+        path = self._unique_recording_path(folder, filename)
+        self._recording_file = open(path, 'w', newline='')
+        self._recording_writer = csv.writer(self._recording_file)
+        self._recording_path = path
+        self._recording_filename_prefix = filename_prefix
+        self._recording_sample_index = 0
+        self._recording_electrodes = list(electrodes)
+        self._recording_step_ms = step_ms
+        self._recording_duration_s = duration_s
+        self._recording_max_samples = (
+            max(1, int(math.ceil(duration_s * 1000.0 / step_ms)))
+            if duration_s is not None and step_ms > 0 else None)
+        self._recording_active = True
+        self._recording_writer.writerow(['recording_name', name])
+        self._recording_writer.writerow(['timestep_ms', step_ms])
+        self._recording_writer.writerow(
+            ['sampling_frequency_hz', f'{self._recording_frequency_hz(step_ms):.6f}'])
+        self._recording_writer.writerow(['electrode_count', len(electrodes)])
+        self._recording_writer.writerow([
+            'duration_s', '' if duration_s is None else f'{duration_s:.6f}'])
+        self._recording_writer.writerow(
+            ['electrodes'] + [f'Row {row} Column {col}'
+                              for row, col, _height in electrodes])
+        self._recording_writer.writerow([])
+        self._recording_writer.writerow(
+            ['sample_index', 'time_s'] +
+            [f'row{row}_col{col}_egm' for row, col, _height in electrodes])
+        self._recording_file.flush()
+        self._update_recording_indicators()
+        self._status_var.set(f'Recording EGM signals: {path}')
+
+    def _record_egm_sample(self, potentials):
+        if (not self._recording_active or self._recording_writer is None or
+                self._recording_file is None):
+            return
+        values = list(potentials[:len(self._recording_electrodes)])
+        if len(values) < len(self._recording_electrodes):
+            values.extend([''] * (len(self._recording_electrodes) - len(values)))
+        time_s = (self._recording_sample_index * self._recording_step_ms) / 1000.0
+        self._recording_writer.writerow(
+            [self._recording_sample_index, f'{time_s:.6f}'] +
+            [f'{value:.6f}' if isinstance(value, float) else value
+             for value in values])
+        self._recording_sample_index += 1
+        self._recording_file.flush()
+        self._update_recording_indicators()
+        if (self._recording_max_samples is not None and
+                self._recording_sample_index >= self._recording_max_samples):
+            self.stop_recording()
+
+    def _finalize_recording_filename(self, path, elapsed_s):
+        prefix = self._recording_filename_prefix
+        if not path or not prefix:
+            return path
+        folder = os.path.dirname(path)
+        filename = f'{prefix}_{self._format_duration_for_filename(elapsed_s)}.csv'
+        final_path = self._unique_recording_path(folder, filename, exclude_path=path)
+        if os.path.abspath(final_path) == os.path.abspath(path):
+            return path
+        os.replace(path, final_path)
+        return final_path
+
+    def stop_recording(self, show_status=True):
+        path = self._recording_path
+        elapsed_s = self._recording_elapsed_s()
+        was_active = self._recording_active
+        if self._recording_file is not None:
+            self._recording_file.close()
+        if was_active and path:
+            path = self._finalize_recording_filename(path, elapsed_s)
+        self._recording_file = None
+        self._recording_writer = None
+        self._recording_path = None
+        self._recording_filename_prefix = None
+        self._recording_sample_index = 0
+        self._recording_electrodes = []
+        self._recording_step_ms = 0
+        self._recording_duration_s = None
+        self._recording_max_samples = None
+        self._recording_active = False
+        self._update_recording_indicators()
+        if show_status and was_active and path:
+            self._status_var.set(f'Recording saved: {path}')
+
     def _refresh_ports(self):
         ports = [p.device for p in serial.tools.list_ports.comports()]
         self._port_cb['values'] = ports
@@ -1931,6 +2186,7 @@ class App(tk.Tk):
             self._status_var.set('Ready  —  click Initialize Board to start')
 
     def _do_disconnect(self):
+        self.stop_recording()
         if self._stim_mode:
             self._exit_stimulation_mode()
         if self._electrode_mode:
@@ -1955,6 +2211,12 @@ class App(tk.Tk):
         self._update_ges_controls_state()
         if self._egm_window and self._egm_window.winfo_exists():
             self._egm_window.update_edit_state()
+
+    def _clear_signal_windows(self):
+        if self._trace_window and self._trace_window.winfo_exists():
+            self._trace_window.clear_samples()
+        if self._egm_window and self._egm_window.winfo_exists():
+            self._egm_window.clear_samples()
 
     def _send_init(self):
         if not (self._ser and self._ser.is_open):
@@ -2003,6 +2265,8 @@ class App(tk.Tk):
                 'Set one of the configured electrodes as the GES sensing electrode.')
             return
 
+        recording_config = self._prompt_recording_config(electrodes, step)
+
         pacing_lead = self._pacing_lead
         if (pacing_lead is not None and
                 (pacing_lead[0] >= rows or pacing_lead[1] >= cols)):
@@ -2013,6 +2277,7 @@ class App(tk.Tk):
             h_delays, v_delays, h_gaps, v_gaps, electrodes,
             self._ges_sensing_electrode, pacing_lead)
 
+        self._clear_signal_windows()
         self._rows = rows
         self._cols = cols
         self._pkt_count = 0
@@ -2024,6 +2289,11 @@ class App(tk.Tk):
         self._ges_sensing_btn.configure(state='disabled')
         self._pacing_lead_btn.configure(state='disabled')
         self._ensure_egm_window_for_electrodes(electrodes)
+        if recording_config is not None:
+            name, folder, filename, filename_prefix, duration_s = recording_config
+            self._start_recording(
+                name, folder, filename, filename_prefix, electrodes, step,
+                duration_s)
         self._status_var.set(f'Running  {rows}×{cols}  step={step} ms')
 
     # ── background serial reader ──────────────────────────────────────────────
@@ -2079,6 +2349,7 @@ class App(tk.Tk):
             self._trace_window.add_samples(rows, cols, voltages)
         if self._egm_window and self._egm_window.winfo_exists():
             self._egm_window.add_samples(potentials)
+        self._record_egm_sample(potentials)
         show_v = self._show_values_var.get()
         show_c = self._show_colors_var.get()
         show_inactive = self._show_inactive_var.get()
@@ -2282,6 +2553,7 @@ class App(tk.Tk):
         self._refresh_egm_chart_titles()
 
     def on_close(self):
+        self.stop_recording()
         self._do_disconnect()
         self.destroy()
 

@@ -100,6 +100,8 @@ Before initialization, click **Set Electrodes**, choose the electrode height, an
 
 After initialization, the same button becomes **EGM Viewer**. Click it to reopen or raise the EGM Signals window for the configured electrodes.
 
+When **Initialize Board** is pressed, the controller can record the configured EGM signals to CSV. If recording is enabled, enter a recording name before initialization starts, then optionally set a recording duration in seconds. Files are written to the controller `recordings` folder using `name_Nsig_Fhz.csv` naming while recording, then renamed when saved to include the actual recorded duration, for example `test_5sig_100hz_37secs.csv`. Recording indicators and **Stop Recording** buttons appear in both the main window and the EGM Signals window while recording is active. Recording stops and the CSV is closed when the optional duration expires, **Stop Recording** is pressed, the board is disconnected, or the controller exits.
+
 #### GES Sensing Electrode
 
 Before initialization, click **Set GES Sensing Electrode** and then click one existing electrode marker. This selects which configured electrode is sent to the external GES pacemaker over `Serial1`. The button is disabled until at least one electrode has been placed. Click the selected sensing electrode again to clear it; clearing it also clears the pacing lead after confirmation. The selected sensing electrode is locked after **Initialize Board** is pressed.
