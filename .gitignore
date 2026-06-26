@@ -6,6 +6,7 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch/
+matlab/
 
 # Python
 __pycache__/
