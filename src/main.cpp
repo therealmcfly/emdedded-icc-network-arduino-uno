@@ -658,6 +658,11 @@ void setup()
 			pacing_lead_enabled = false;
 		}
 	}
+	// Discard stale pacing commands received while waiting for board initialization.
+	while (Serial1.available() > 0)
+	{
+		(void)Serial1.read();
+	}
 
 	init_icc_network_1d();
 	next_step_ms = millis() + time_step_ms;
