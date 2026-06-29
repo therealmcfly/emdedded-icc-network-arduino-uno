@@ -35,7 +35,7 @@ extern "C"
 	} IccPath;
 
 	void icc_path_init(IccPath *path, float *t1, float *t2, uint16_t *delay_ms, uint8_t *gap_mm);
-	void icc_path_update(IccPath *path, uint32_t dt_ms, int8_t *relay);
+	void icc_path_update(IccPath *path, uint32_t dt_ms);
 	uint8_t icc_path_state_index(const IccPath *path);
 
 #ifdef __cplusplus

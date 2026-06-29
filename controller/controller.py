@@ -81,6 +81,22 @@ THEMES = {
 }
 
 
+def validate_path_delays(step_ms, h_delays, v_delays):
+    if step_ms <= 0:
+        raise ValueError('Timestep must be greater than 0 ms.')
+
+    for direction, delays in (('H', h_delays), ('V', v_delays)):
+        for row, values in enumerate(delays):
+            for col, delay in enumerate(values):
+                if delay <= step_ms:
+                    raise ValueError(
+                        f'{direction}-path r{row} c{col} delay ({delay} ms) '
+                        f'must be greater than the timestep ({step_ms} ms).')
+                if delay % step_ms != 0:
+                    raise ValueError(
+                        f'{direction}-path r{row} c{col} delay ({delay} ms) '
+                        f'must be a multiple of the timestep ({step_ms} ms).')
+
 def build_init_packet(
         rows, cols, step_ms, intervals,
         h_delays, v_delays, h_gaps, v_gaps, electrodes,
@@ -94,6 +110,7 @@ def build_init_packet(
     ges_sensing_electrode: optional (row, col) selected from electrodes
     pacing_lead: optional (row, col) for pacemaker-triggered stimulation
     """
+    validate_path_delays(step_ms, h_delays, v_delays)
     buf = bytearray(INIT_HEADER)
     buf.append(rows)
     buf.append(cols)
@@ -2235,24 +2252,40 @@ class App(tk.Tk):
             messagebox.showerror('Invalid input', str(exc))
             return
 
-        intervals = [[int(self._iv_vars[r][c].get()) for c in range(cols)]
-                     for r in range(rows)]
+        try:
+            intervals = [
+                [int(self._iv_vars[r][c].get()) for c in range(cols)]
+                for r in range(rows)
+            ]
 
-        h_delays = ([[self._hpath_vars[r][c].get() for c in range(cols - 1)]
-                     for r in range(rows)]
-                    if cols > 1 and self._hpath_vars else [])
+            h_delays = (
+                [[self._hpath_vars[r][c].get() for c in range(cols - 1)]
+                 for r in range(rows)]
+                if cols > 1 and self._hpath_vars else []
+            )
 
-        v_delays = ([[self._vpath_vars[r][c].get() for c in range(cols)]
-                     for r in range(rows - 1)]
-                    if rows > 1 and self._vpath_vars else [])
+            v_delays = (
+                [[self._vpath_vars[r][c].get() for c in range(cols)]
+                 for r in range(rows - 1)]
+                if rows > 1 and self._vpath_vars else []
+            )
 
-        h_gaps = ([[self._hgap_vars[r][c].get() for c in range(cols - 1)]
-                   for r in range(rows)]
-                  if cols > 1 and self._hgap_vars else [])
+            h_gaps = (
+                [[self._hgap_vars[r][c].get() for c in range(cols - 1)]
+                 for r in range(rows)]
+                if cols > 1 and self._hgap_vars else []
+            )
 
-        v_gaps = ([[self._vgap_vars[r][c].get() for c in range(cols)]
-                   for r in range(rows - 1)]
-                  if rows > 1 and self._vgap_vars else [])
+            v_gaps = (
+                [[self._vgap_vars[r][c].get() for c in range(cols)]
+                 for r in range(rows - 1)]
+                if rows > 1 and self._vgap_vars else []
+            )
+
+            validate_path_delays(step, h_delays, v_delays)
+        except (tk.TclError, ValueError) as exc:
+            messagebox.showerror('Invalid path timing', str(exc))
+            return
         electrodes = [
             (row, col, height)
             for (row, col), height in self._electrodes.items()

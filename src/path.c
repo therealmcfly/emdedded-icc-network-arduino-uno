@@ -12,11 +12,11 @@ static void clear_outputs(float *relay_atob, float *relay_btoa, float *t1, float
 	}
 	if (t1 != 0)
 	{
-		*t1 = 0.0f;
+		*t1 = -1.0f;
 	}
 	if (t2 != 0)
 	{
-		*t2 = 0.0f;
+		*t2 = -1.0f;
 	}
 }
 
@@ -29,7 +29,17 @@ static bool icc_is_active(const Icc *cell)
 
 	return (cell->state == Q1_UPSTROKE) || (cell->state == Q2_PLATEAU) || (cell->state == Q3_REPOLARIZATION);
 }
+static bool check_relay_due_next_step(const IccPath *path, uint32_t dt_ms)
+{
+	const uint32_t delay_ms = (uint32_t)path->delay_ms;
 
+	if (path->wait_ms_accum >= delay_ms)
+	{
+		return true;
+	}
+
+	return dt_ms >= delay_ms - path->wait_ms_accum;
+}
 void icc_path_init(IccPath *path, float *t0, float *t1, uint16_t *delay_ms, uint8_t *gap_mm)
 {
 	if (path == 0)
@@ -55,20 +65,16 @@ void icc_path_init(IccPath *path, float *t0, float *t1, uint16_t *delay_ms, uint
 
 	if (t0 != 0)
 	{
-		*path->t[0] = 0.0f;
+		*path->t[0] = -1.0f;
 	}
 	if (t1 != 0)
 	{
-		*path->t[1] = 0.0f;
+		*path->t[1] = -1.0f;
 	}
 }
 
-void icc_path_update(IccPath *path, uint32_t dt_ms, int8_t *relay)
+void icc_path_update(IccPath *path, uint32_t dt_ms)
 {
-	if (relay != 0)
-	{
-		*relay = -1;
-	}
 
 	if (path == 0)
 	{
@@ -86,8 +92,6 @@ void icc_path_update(IccPath *path, uint32_t dt_ms, int8_t *relay)
 		return;
 	}
 
-	clear_outputs(0, 0, path->t[0], path->t[1]);
-
 	switch (path->state)
 	{
 	case PATH_IDLE:
@@ -98,11 +102,13 @@ void icc_path_update(IccPath *path, uint32_t dt_ms, int8_t *relay)
 		else if (icc_is_active(path->cells[0]) && !icc_is_active(path->cells[1]))
 		{
 			path->wait_ms_accum = 0U;
+			*path->t[0] = (float)path->wait_ms_accum * 1.0e-3f;
 			path->state = PATH_CELL_A_WAIT;
 		}
 		else if (icc_is_active(path->cells[1]) && !icc_is_active(path->cells[0]))
 		{
 			path->wait_ms_accum = 0U;
+			*path->t[1] = (float)path->wait_ms_accum * 1.0e-3f;
 			path->state = PATH_CELL_B_WAIT;
 		}
 		break;
@@ -111,49 +117,45 @@ void icc_path_update(IccPath *path, uint32_t dt_ms, int8_t *relay)
 		if (!icc_is_active(path->cells[0]) && !icc_is_active(path->cells[1]))
 		{
 			path->state = PATH_IDLE;
+			clear_outputs(0, 0, path->t[0], path->t[1]);
 		}
 		break;
 
 	case PATH_CELL_A_WAIT:
+
 		path->wait_ms_accum += dt_ms;
 		*path->t[0] = (float)path->wait_ms_accum * 1.0e-3f;
-		if (path->wait_ms_accum >= (int)path->delay_ms)
+
+		if (check_relay_due_next_step(path, dt_ms))
 		{
 			path->cells[1]->relay = 1.0f;
-			if (relay != 0)
-			{
-				*relay = 1;
-			}
-			path->wait_ms_accum = 0U;
 			path->state = PATH_CELL_A_RELAY;
 		}
 		break;
 
 	case PATH_CELL_A_RELAY:
 		path->state = PATH_IDLE;
+		clear_outputs(0, 0, path->t[0], path->t[1]);
 		break;
 
 	case PATH_CELL_B_WAIT:
 		path->wait_ms_accum += dt_ms;
 		*path->t[1] = (float)path->wait_ms_accum * 1.0e-3f;
-		if (path->wait_ms_accum >= (int)path->delay_ms)
+		if (check_relay_due_next_step(path, dt_ms))
 		{
 			path->cells[0]->relay = 1.0f;
-			if (relay != 0)
-			{
-				*relay = 0;
-			}
-			path->wait_ms_accum = 0U;
 			path->state = PATH_CELL_B_RELAY;
 		}
 		break;
 
 	case PATH_CELL_B_RELAY:
 		path->state = PATH_IDLE;
+		clear_outputs(0, 0, path->t[0], path->t[1]);
 		break;
 
 	default:
 		path->state = PATH_IDLE;
+		clear_outputs(0, 0, path->t[0], path->t[1]);
 		break;
 	}
 }

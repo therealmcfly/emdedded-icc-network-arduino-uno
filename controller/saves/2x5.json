@@ -8,7 +8,7 @@
       0,
       0,
       0,
-      20
+      30
     ],
     [
       0,
@@ -67,13 +67,36 @@
   "electrodes": [
     {
       "row": 0,
-      "col": 4,
+      "col": 0,
+      "height_mm": 1
+    },
+    {
+      "row": 0,
+      "col": 1,
       "height_mm": 1
     },
     {
       "row": 0,
       "col": 2,
       "height_mm": 1
+    },
+    {
+      "row": 0,
+      "col": 3,
+      "height_mm": 1
+    },
+    {
+      "row": 0,
+      "col": 4,
+      "height_mm": 1
     }
-  ]
+  ],
+  "ges_sensing_electrode": {
+    "row": 0,
+    "col": 4
+  },
+  "pacing_lead": {
+    "row": 0,
+    "col": 4
+  }
 }

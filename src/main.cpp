@@ -126,19 +126,7 @@ static void step_icc_network_1d(uint32_t *dt_ms)
 			for (uint8_t j = 0; j < h_count - 1; j++)
 			{
 				// Update the path between adjacent ICCs
-				int8_t relay = -1;
-				icc_path_update(&h_paths[i][j], *dt_ms, &relay);
-				switch (relay)
-				{
-				case 0:
-					(void)icc_apply_relay(&iccs[i][j]);
-					break;
-				case 1:
-					(void)icc_apply_relay(&iccs[i][j + 1]);
-					break;
-				default:
-					break;
-				}
+				icc_path_update(&h_paths[i][j], *dt_ms);
 				// Update the path dipole for EGM calculation
 				path_dipole_update(&h_path_dipoles[i][j]);
 				for (size_t e = 0; e < electrode_count; e++)
@@ -157,20 +145,7 @@ static void step_icc_network_1d(uint32_t *dt_ms)
 			for (uint8_t j = 0; j < h_count; j++)
 			{
 				// Update the path between adjacent ICCs
-				int8_t relay = -1;
-				icc_path_update(&v_paths[i][j], *dt_ms, &relay);
-				switch (relay)
-				{
-				case 0:
-					(void)icc_apply_relay(&iccs[i][j]);
-					break;
-				case 1:
-					(void)icc_apply_relay(&iccs[i + 1][j]);
-					break;
-				default:
-					break;
-				}
-
+				icc_path_update(&v_paths[i][j], *dt_ms);
 				// Update the path dipole for EGM calculation
 				path_dipole_update(&v_path_dipoles[i][j]);
 				for (size_t e = 0; e < electrode_count; e++)
@@ -203,19 +178,7 @@ static void step_icc_network_2d(uint32_t *dt_ms)
 	{
 		for (uint8_t j = 0; j < h_count - 1; j++)
 		{
-			int8_t relay = -1;
-			icc_path_update(&h_paths[i][j], *dt_ms, &relay);
-			switch (relay)
-			{
-			case 0:
-				(void)icc_apply_relay(&iccs[i][j]);
-				break;
-			case 1:
-				(void)icc_apply_relay(&iccs[i][j + 1]);
-				break;
-			default:
-				break;
-			}
+			icc_path_update(&h_paths[i][j], *dt_ms);
 			path_dipole_update(&h_path_dipoles[i][j]);
 			for (size_t e = 0; e < electrode_count; e++)
 			{
@@ -229,19 +192,7 @@ static void step_icc_network_2d(uint32_t *dt_ms)
 	{
 		for (uint8_t j = 0; j < h_count; j++)
 		{
-			int8_t relay = -1;
-			icc_path_update(&v_paths[i][j], *dt_ms, &relay);
-			switch (relay)
-			{
-			case 0:
-				(void)icc_apply_relay(&iccs[i][j]);
-				break;
-			case 1:
-				(void)icc_apply_relay(&iccs[i + 1][j]);
-				break;
-			default:
-				break;
-			}
+			icc_path_update(&v_paths[i][j], *dt_ms);
 			path_dipole_update(&v_path_dipoles[i][j]);
 			for (size_t e = 0; e < electrode_count; e++)
 			{
@@ -478,184 +429,205 @@ static bool wait_for_init_packet()
 	}
 }
 
+static bool path_delay_is_valid(uint16_t delay_ms, uint32_t step_ms)
+{
+	return step_ms > 0U &&
+			(uint32_t)delay_ms > step_ms &&
+			((uint32_t)delay_ms % step_ms) == 0U;
+}
 void setup()
 {
-	bool is_serial_connected = false;
-
 	Serial.begin(115200);
 	Serial1.begin(115200);
 
-	while (!is_serial_connected)
+	bool init_settings_valid = false;
+	while (!init_settings_valid)
 	{
-		is_serial_connected = wait_for_init_packet();
-	}
-
-	// Read and unpack the init packet payload into the local buffers.
-	// Packet layout after the ASCII header: rows(1), cols(1), time_step_ms(uint16 LE),
-	// then rows*cols bytes of per-cell freq, then (if cols>1) rows*(cols-1) uint16 LE
-	// horizontal delays, then (if rows>1) (rows-1)*cols uint16 LE vertical delays,
-	// followed by matching uint8 H-path and V-path gaps in millimetres,
-	// then electrode_count and row/column/height bytes for each electrode,
-	// then GES-sensing enabled/index bytes, then pacing-lead enabled/row/column bytes.
-	{
-		uint8_t b = 0;
-
-		// read rows
-		while (Serial.available() == 0)
-			;
-		b = (uint8_t)Serial.read();
-		v_count = b;
-
-		// read cols
-		while (Serial.available() == 0)
-			;
-		b = (uint8_t)Serial.read();
-		h_count = b;
-
-		// read time_step_ms (uint16 little-endian)
-		uint8_t lo = 0;
-		uint8_t hi = 0;
-		while (Serial.available() == 0)
-			;
-		lo = (uint8_t)Serial.read();
-		while (Serial.available() == 0)
-			;
-		hi = (uint8_t)Serial.read();
-		uint16_t step = (uint16_t)lo | ((uint16_t)hi << 8);
-		time_step_ms = (uint32_t)step;
-
-		// clamp to compile-time maxima
-
-		if (v_count > MAX_V_ICC_COUNT)
-			v_count = MAX_V_ICC_COUNT;
-		if (h_count > MAX_H_ICC_COUNT)
-			h_count = MAX_H_ICC_COUNT;
-
-		// read per-cell frequencies (one byte each), row-major
-		for (int i = 0; i < v_count; i++)
+		(void)wait_for_init_packet();
+		init_settings_valid = true;
+		// Read and unpack the init packet payload into the local buffers.
+		// Packet layout after the ASCII header: rows(1), cols(1), time_step_ms(uint16 LE),
+		// then rows*cols bytes of per-cell freq, then (if cols>1) rows*(cols-1) uint16 LE
+		// horizontal delays, then (if rows>1) (rows-1)*cols uint16 LE vertical delays,
+		// followed by matching uint8 H-path and V-path gaps in millimetres,
+		// then electrode_count and row/column/height bytes for each electrode,
+		// then GES-sensing enabled/index bytes, then pacing-lead enabled/row/column bytes.
 		{
-			for (int j = 0; j < h_count; j++)
+			uint8_t b = 0;
+
+			// read rows
+			while (Serial.available() == 0)
+				;
+			b = (uint8_t)Serial.read();
+			v_count = b;
+
+			// read cols
+			while (Serial.available() == 0)
+				;
+			b = (uint8_t)Serial.read();
+			h_count = b;
+
+			// read time_step_ms (uint16 little-endian)
+			uint8_t lo = 0;
+			uint8_t hi = 0;
+			while (Serial.available() == 0)
+				;
+			lo = (uint8_t)Serial.read();
+			while (Serial.available() == 0)
+				;
+			hi = (uint8_t)Serial.read();
+			uint16_t step = (uint16_t)lo | ((uint16_t)hi << 8);
+			time_step_ms = (uint32_t)step;
+			if (time_step_ms == 0U)
+			{
+				init_settings_valid = false;
+			}
+
+			// clamp to compile-time maxima
+
+			if (v_count > MAX_V_ICC_COUNT)
+				v_count = MAX_V_ICC_COUNT;
+			if (h_count > MAX_H_ICC_COUNT)
+				h_count = MAX_H_ICC_COUNT;
+
+			// read per-cell frequencies (one byte each), row-major
+			for (int i = 0; i < v_count; i++)
+			{
+				for (int j = 0; j < h_count; j++)
+				{
+					while (Serial.available() == 0)
+						;
+					int8_t interval = (int8_t)Serial.read();
+					icc_sw_interval_buff[i][j] = interval;
+				}
+			}
+
+			// read horizontal path delays (uint16 LE) if present
+			if (h_count > 1)
+			{
+				for (int i = 0; i < v_count; i++)
+				{
+					for (int j = 0; j < h_count - 1; j++)
+					{
+						while (Serial.available() == 0)
+							;
+						uint8_t l = (uint8_t)Serial.read();
+						while (Serial.available() == 0)
+							;
+						uint8_t h = (uint8_t)Serial.read();
+						h_path_delay_buff[i][j] = ((uint16_t)l | ((uint16_t)h << 8));
+						if (!path_delay_is_valid(h_path_delay_buff[i][j], time_step_ms))
+						{
+							init_settings_valid = false;
+						}
+					}
+				}
+			}
+
+			// read vertical path delays (uint16 LE) if present
+			if (v_count > 1)
+			{
+				for (int i = 0; i < v_count - 1; i++)
+				{
+					for (int j = 0; j < h_count; j++)
+					{
+						while (Serial.available() == 0)
+							;
+						uint8_t l = (uint8_t)Serial.read();
+						while (Serial.available() == 0)
+							;
+						uint8_t h = (uint8_t)Serial.read();
+						v_path_delay_buff[i][j] = ((uint16_t)l | ((uint16_t)h << 8));
+						if (!path_delay_is_valid(v_path_delay_buff[i][j], time_step_ms))
+						{
+							init_settings_valid = false;
+						}
+					}
+				}
+			}
+
+			// read horizontal path gaps (uint8 mm) if present
+			if (h_count > 1)
+			{
+				for (int i = 0; i < v_count; i++)
+				{
+					for (int j = 0; j < h_count - 1; j++)
+					{
+						while (Serial.available() == 0)
+							;
+						h_path_gap_buff[i][j] = (uint8_t)Serial.read();
+					}
+				}
+			}
+
+			// read vertical path gaps (uint8 mm) if present
+			if (v_count > 1)
+			{
+				for (int i = 0; i < v_count - 1; i++)
+				{
+					for (int j = 0; j < h_count; j++)
+					{
+						while (Serial.available() == 0)
+							;
+						v_path_gap_buff[i][j] = (uint8_t)Serial.read();
+					}
+				}
+			}
+
+			while (Serial.available() == 0)
+				;
+			const uint8_t requested_electrode_count = (uint8_t)Serial.read();
+			electrode_count =
+					requested_electrode_count > MAX_ELECTRODE_COUNT
+							? MAX_ELECTRODE_COUNT
+							: requested_electrode_count;
+
+			for (uint8_t i = 0; i < requested_electrode_count; i++)
 			{
 				while (Serial.available() == 0)
 					;
-				int8_t interval = (int8_t)Serial.read();
-				icc_sw_interval_buff[i][j] = interval;
-			}
-		}
+				const uint8_t row = (uint8_t)Serial.read();
+				while (Serial.available() == 0)
+					;
+				const uint8_t col = (uint8_t)Serial.read();
+				while (Serial.available() == 0)
+					;
+				const uint8_t height_mm = (uint8_t)Serial.read();
 
-		// read horizontal path delays (uint16 LE) if present
-		if (h_count > 1)
-		{
-			for (int i = 0; i < v_count; i++)
-			{
-				for (int j = 0; j < h_count - 1; j++)
+				if (i < electrode_count)
 				{
-					while (Serial.available() == 0)
-						;
-					uint8_t l = (uint8_t)Serial.read();
-					while (Serial.available() == 0)
-						;
-					uint8_t h = (uint8_t)Serial.read();
-					h_path_delay_buff[i][j] = ((uint16_t)l | ((uint16_t)h << 8));
+					electrode_init(&electrodes[i], row, col, height_mm);
 				}
 			}
-		}
 
-		// read vertical path delays (uint16 LE) if present
-		if (v_count > 1)
-		{
-			for (int i = 0; i < v_count - 1; i++)
-			{
-				for (int j = 0; j < h_count; j++)
-				{
-					while (Serial.available() == 0)
-						;
-					uint8_t l = (uint8_t)Serial.read();
-					while (Serial.available() == 0)
-						;
-					uint8_t h = (uint8_t)Serial.read();
-					v_path_delay_buff[i][j] = ((uint16_t)l | ((uint16_t)h << 8));
-				}
-			}
-		}
-
-		// read horizontal path gaps (uint8 mm) if present
-		if (h_count > 1)
-		{
-			for (int i = 0; i < v_count; i++)
-			{
-				for (int j = 0; j < h_count - 1; j++)
-				{
-					while (Serial.available() == 0)
-						;
-					h_path_gap_buff[i][j] = (uint8_t)Serial.read();
-				}
-			}
-		}
-
-		// read vertical path gaps (uint8 mm) if present
-		if (v_count > 1)
-		{
-			for (int i = 0; i < v_count - 1; i++)
-			{
-				for (int j = 0; j < h_count; j++)
-				{
-					while (Serial.available() == 0)
-						;
-					v_path_gap_buff[i][j] = (uint8_t)Serial.read();
-				}
-			}
-		}
-
-		while (Serial.available() == 0)
-			;
-		const uint8_t requested_electrode_count = (uint8_t)Serial.read();
-		electrode_count =
-				requested_electrode_count > MAX_ELECTRODE_COUNT
-						? MAX_ELECTRODE_COUNT
-						: requested_electrode_count;
-
-		for (uint8_t i = 0; i < requested_electrode_count; i++)
-		{
 			while (Serial.available() == 0)
 				;
-			const uint8_t row = (uint8_t)Serial.read();
+			ges_sensing_enabled = ((uint8_t)Serial.read()) != 0U;
 			while (Serial.available() == 0)
 				;
-			const uint8_t col = (uint8_t)Serial.read();
-			while (Serial.available() == 0)
-				;
-			const uint8_t height_mm = (uint8_t)Serial.read();
-
-			if (i < electrode_count)
+			ges_sensing_electrode_index = (uint8_t)Serial.read();
+			if (ges_sensing_electrode_index >= electrode_count)
 			{
-				electrode_init(&electrodes[i], row, col, height_mm);
+				ges_sensing_enabled = false;
+			}
+
+			while (Serial.available() == 0)
+				;
+			pacing_lead_enabled = ((uint8_t)Serial.read()) != 0U;
+			while (Serial.available() == 0)
+				;
+			pacing_lead_row = (uint8_t)Serial.read();
+			while (Serial.available() == 0)
+				;
+			pacing_lead_col = (uint8_t)Serial.read();
+			if (pacing_lead_row >= v_count || pacing_lead_col >= h_count)
+			{
+				pacing_lead_enabled = false;
 			}
 		}
-
-		while (Serial.available() == 0)
-			;
-		ges_sensing_enabled = ((uint8_t)Serial.read()) != 0U;
-		while (Serial.available() == 0)
-			;
-		ges_sensing_electrode_index = (uint8_t)Serial.read();
-		if (ges_sensing_electrode_index >= electrode_count)
+			if (!init_settings_valid)
 		{
-			ges_sensing_enabled = false;
-		}
-
-		while (Serial.available() == 0)
-			;
-		pacing_lead_enabled = ((uint8_t)Serial.read()) != 0U;
-		while (Serial.available() == 0)
-			;
-		pacing_lead_row = (uint8_t)Serial.read();
-		while (Serial.available() == 0)
-			;
-		pacing_lead_col = (uint8_t)Serial.read();
-		if (pacing_lead_row >= v_count || pacing_lead_col >= h_count)
-		{
-			pacing_lead_enabled = false;
+			Serial.println("embedded-icc-uno: invalid path timing; waiting for initialization");
 		}
 	}
 	// Discard stale pacing commands received while waiting for board initialization.

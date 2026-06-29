@@ -148,13 +148,13 @@ void path_dipole_update(PathDipole *dipole)
 	const Icc *end_cell;
 	float elapsed_s;
 
-	if (forward_time_s > 0.0f)
+	if (forward_time_s >= 0.0f)
 	{
 		start_cell = path->cells[0];
 		end_cell = path->cells[1];
 		elapsed_s = forward_time_s;
 	}
-	else if (reverse_time_s > 0.0f)
+	else if (reverse_time_s >= 0.0f)
 	{
 		start_cell = path->cells[1];
 		end_cell = path->cells[0];
